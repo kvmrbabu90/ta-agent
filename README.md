@@ -209,7 +209,34 @@ For SHAP attributions on individual picks, use
 `packages.inference.explain.explain_predictions(...)` from a notebook or
 the API server (Phase 8).
 
-### 11. Query membership at any past date
+### 11. Run the API
+
+The FastAPI backend serves predictions, performance, and SHAP explanations
+to the frontend (Phase 9) and to anything else you want to point at it:
+
+```powershell
+uvicorn services.api.main:app --reload
+```
+
+Then open [http://localhost:8000/docs](http://localhost:8000/docs) for the
+interactive Swagger UI. All endpoints are read-only (`GET`); the API never
+triggers training or predictions — those run via `jobs/daily_predict.py`
+and `scripts/train_models.py`.
+
+Endpoints:
+- `GET /health`
+- `GET /universes`
+- `GET /universes/{universe}/members?as_of=YYYY-MM-DD`
+- `GET /predictions/top?universe=&direction=long|short&limit=20&as_of=`
+- `GET /predictions/{universe}/{symbol}?lookback_days=180`
+- `GET /stocks/{symbol}/ohlcv?start=&end=`
+- `GET /performance/{universe}?lookback_days=90`
+- `GET /explain/{universe}/{symbol}?as_of=&top_k=5`
+
+CORS is preconfigured for `http://localhost:5173` (Vite default) and
+`http://localhost:3000`.
+
+### 12. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on

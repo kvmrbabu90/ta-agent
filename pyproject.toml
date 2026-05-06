@@ -89,6 +89,9 @@ ignore = ["E501"]
 "tests/unit/test_predict.py" = ["N803", "N806"]
 "tests/unit/test_explain.py" = ["N803", "N806"]
 "tests/integration/test_train_e2e.py" = ["N803", "N806"]
+# B008: FastAPI's canonical pattern is Depends(...) / Query(...) in defaults.
+"services/api/routes/*.py" = ["B008"]
+"services/api/main.py" = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
