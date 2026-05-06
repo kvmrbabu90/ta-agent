@@ -20,10 +20,12 @@ from datetime import date
 
 import pandas as pd
 
+# Import macro to trigger its extension registration as a side effect.
+import packages.features.macro  # noqa: F401
 from packages.common.logging import log
 from packages.features.base import FeatureGroup, PanelFeatureGroup
 from packages.features.cross_sectional import CrossSectionalFeatures
-from packages.features.macro import MacroFeatures
+from packages.features.extensions import get_active_extensions
 from packages.features.market_structure import MarketStructureFeatures
 from packages.features.microstructure import MicrostructureFeatures
 from packages.features.momentum import MomentumFeatures
@@ -34,7 +36,6 @@ from packages.features.trend import TrendFeatures
 from packages.features.volatility import VolatilityFeatures
 from packages.features.volume import VolumeFeatures
 from packages.features.volume_profile import VolumeProfileFeatures
-from packages.ingestion.macro import has_macro_data
 from packages.ingestion.storage import get_conn, get_ohlcv
 
 # Order matters: panel groups (cross-sectional, regime) read columns produced
@@ -51,7 +52,8 @@ PER_SYMBOL_GROUPS: list[FeatureGroup] = [
     SwingFeatures(),
 ]
 
-# Panel groups depend on data presence — see _resolve_panel_groups.
+# Always-on panel groups. Conditional ones are pulled in via the extension
+# registry (see packages/features/extensions.py).
 _BASE_PANEL_GROUPS: list[PanelFeatureGroup] = [
     CrossSectionalFeatures(),
     RegimeFeatures(),
@@ -59,14 +61,18 @@ _BASE_PANEL_GROUPS: list[PanelFeatureGroup] = [
 
 
 def _resolve_panel_groups(duckdb_path: str | None) -> list[PanelFeatureGroup]:
-    """Always include cross-sectional + regime; conditionally append macro
-    when macro_daily has data (otherwise the column would be a NaN sea)."""
     groups: list[PanelFeatureGroup] = list(_BASE_PANEL_GROUPS)
-    try:
-        if has_macro_data(duckdb_path=duckdb_path):
-            groups.append(MacroFeatures(duckdb_path=duckdb_path))
-    except Exception as exc:  # noqa: BLE001 — macro data is optional, never fail the run
-        log.debug(f"macro presence check failed (continuing without macro): {exc!r}")
+    for kind, group in get_active_extensions(duckdb_path=duckdb_path):
+        if kind == "panel":
+            groups.append(group)
+    return groups
+
+
+def _resolve_per_symbol_groups(duckdb_path: str | None) -> list[FeatureGroup]:
+    groups: list[FeatureGroup] = list(PER_SYMBOL_GROUPS)
+    for kind, group in get_active_extensions(duckdb_path=duckdb_path):
+        if kind == "per_symbol":
+            groups.append(group)
     return groups
 
 
@@ -125,15 +131,18 @@ def _is_member_mask(
     return out.fillna(False).astype(bool).values
 
 
-def _per_symbol_features(symbol: str, ohlcv: pd.DataFrame) -> pd.DataFrame:
+def _per_symbol_features(
+    symbol: str,
+    ohlcv: pd.DataFrame,
+    groups: list[FeatureGroup],
+) -> pd.DataFrame:
     """Run all per-symbol groups and concatenate features for one symbol."""
     if ohlcv.empty:
         return pd.DataFrame()
     ohlcv = ohlcv.sort_values("bar_date").reset_index(drop=True)
     pieces: list[pd.DataFrame] = []
-    for group in PER_SYMBOL_GROUPS:
+    for group in groups:
         piece = group.compute(ohlcv)
-        # Each group returns DataFrame indexed by bar_date.
         piece = piece.reset_index(drop=True)
         pieces.append(piece)
     feat = pd.concat(pieces, axis=1)
@@ -165,12 +174,14 @@ def build_feature_matrix(
         f"({len(symbols)} symbols)"
     )
 
+    per_symbol_groups = _resolve_per_symbol_groups(duckdb_path)
+
     rows: list[pd.DataFrame] = []
     for sym in symbols:
         ohlcv = get_ohlcv(sym, start=start, end=end)
         if ohlcv.empty:
             continue
-        feat = _per_symbol_features(sym, ohlcv)
+        feat = _per_symbol_features(sym, ohlcv, per_symbol_groups)
         rows.append(feat)
 
     if not rows:

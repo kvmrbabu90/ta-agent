@@ -158,7 +158,32 @@ The output parquet has `symbol, bar_date, <feature columns>, fwd_return_5d,
 fwd_quintile_5d, in_universe`. Modeling code must filter to
 `in_universe == True` AND non-null labels before training.
 
-### 9. Query membership at any past date
+### 9. Train models
+
+Once you have a training dataset on disk, run purged walk-forward CV +
+LightGBM training. Two models per universe (regression on the next 5-day
+log return, and classification on the cross-sectional quintile):
+
+```powershell
+python -m scripts.train_models --universe SP500 --target regression --dataset data/processed/training_sp500_2014-01-01_2024-12-31.parquet --tune --n-trials 50
+
+python -m scripts.train_models --universe SP500 --target classification --dataset data/processed/training_sp500_2014-01-01_2024-12-31.parquet --tune --n-trials 50
+```
+
+What runs:
+- 5-fold purged walk-forward CV with a 5-day embargo (no label leakage)
+- Optional Optuna search (`--tune`) over the 7 main hyperparameters
+- A final production model trained on data through `today - 60 days`,
+  with the last 60 days as the early-stopping holdout
+- For classification: per-class isotonic calibration on a slice strictly
+  before the early-stopping window
+- Model + metadata + feature_importance.csv saved under `data/models/`
+
+If the model produces IC > 0.15, hit-rate > 65%, or top-bottom decile
+spread > 2%/week — STOP. Those are red-flag levels for retail equities;
+look for a leakage bug.
+
+### 10. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on

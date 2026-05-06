@@ -211,14 +211,21 @@ def test_known_series_tickers_match() -> None:
     assert SERIES_TICKERS["usd_inr"] == "INR=X"
 
 
-def test_pipeline_resolve_panel_groups_handles_macro_failure(
+def test_pipeline_resolve_panel_groups_handles_extension_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If has_macro_data raises (e.g. table missing), pipeline must still run."""
-    monkeypatch.setattr(
-        pipeline_mod, "has_macro_data",
-        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
+    """An extension that raises during is_available must not break the pipeline."""
+    from packages.features import extensions as ext_mod
+    from packages.features.macro import _MacroExtension
+
+    # Replace the live MacroExtension's is_available with one that raises.
+    boom_ext = _MacroExtension()
+
+    def _boom(*, duckdb_path=None):
+        raise RuntimeError("simulated extension failure")
+
+    monkeypatch.setattr(boom_ext, "is_available", _boom)
+    monkeypatch.setattr(ext_mod, "_EXTENSIONS", [boom_ext])
+
     groups = pipeline_mod._resolve_panel_groups(duckdb_path=None)
-    # Two base groups present, no macro group appended.
-    assert len(groups) == 2
+    assert len(groups) == 2  # base groups only; failing extension silently dropped

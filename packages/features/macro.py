@@ -17,7 +17,8 @@ import numpy as np
 import pandas as pd
 
 from packages.features.base import PanelFeatureGroup
-from packages.ingestion.macro import load_macro_series
+from packages.features.extensions import FeatureExtension, register_extension
+from packages.ingestion.macro import has_macro_data, load_macro_series
 
 
 def _trailing_zscore(s: pd.Series, window: int) -> pd.Series:
@@ -84,3 +85,22 @@ class MacroFeatures(PanelFeatureGroup):
             for c in ("vix_level_z_252", "vix_chg_5d", "fx_ret_5d")
         }
         return merged.rename(columns=rename)
+
+
+# --- Extension registration -----------------------------------------------
+# Picked up automatically by pipeline._resolve_panel_groups via the extension
+# registry. v2 (earnings, news_sentiment) will register the same way.
+
+
+class _MacroExtension(FeatureExtension):
+    name = "macro"
+    kind = "panel"
+
+    def is_available(self, *, duckdb_path: str | None = None) -> bool:
+        return has_macro_data(duckdb_path=duckdb_path)
+
+    def make_group(self, *, duckdb_path: str | None = None) -> MacroFeatures:
+        return MacroFeatures(duckdb_path=duckdb_path)
+
+
+register_extension(_MacroExtension())
