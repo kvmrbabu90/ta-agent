@@ -23,6 +23,7 @@ import pandas as pd
 from packages.common.logging import log
 from packages.features.base import FeatureGroup, PanelFeatureGroup
 from packages.features.cross_sectional import CrossSectionalFeatures
+from packages.features.market_structure import MarketStructureFeatures
 from packages.features.microstructure import MicrostructureFeatures
 from packages.features.momentum import MomentumFeatures
 from packages.features.price import PriceFeatures
@@ -41,6 +42,7 @@ PER_SYMBOL_GROUPS: list[FeatureGroup] = [
     VolatilityFeatures(),
     VolumeFeatures(),
     MicrostructureFeatures(),
+    MarketStructureFeatures(),
 ]
 
 PANEL_GROUPS: list[PanelFeatureGroup] = [

@@ -11,6 +11,7 @@ import pytest
 
 from packages.common.config import settings
 from packages.features.cross_sectional import CrossSectionalFeatures
+from packages.features.market_structure import MarketStructureFeatures
 from packages.features.microstructure import MicrostructureFeatures
 from packages.features.momentum import MomentumFeatures
 from packages.features.pipeline import build_feature_matrix
@@ -21,14 +22,16 @@ from packages.features.volatility import VolatilityFeatures
 from packages.features.volume import VolumeFeatures
 from packages.ingestion.storage import get_conn, upsert_membership, upsert_ohlcv
 
-# Expected per-feature counts from the prompt's catalog.
+# Expected per-feature counts after the borrowed-feature expansion.
+# Total = 8 + 16 + 16 + 13 + 10 + 6 + 4 + 6 + 5 = 84
 EXPECTED_PER_GROUP = {
     "price": 8,
-    "trend": 10,
-    "momentum": 8,
-    "volatility": 6,
-    "volume": 5,
-    "microstructure": 5,
+    "trend": 16,
+    "momentum": 16,
+    "volatility": 13,
+    "volume": 10,
+    "microstructure": 6,
+    "market_structure": 4,
     "cross_sectional": 6,
     "regime": 5,
 }
@@ -70,6 +73,7 @@ def _synthetic_ohlcv(n_days: int = 400, *, seed: int = 0, start_close: float = 1
         (VolatilityFeatures(), EXPECTED_PER_GROUP["volatility"]),
         (VolumeFeatures(), EXPECTED_PER_GROUP["volume"]),
         (MicrostructureFeatures(), EXPECTED_PER_GROUP["microstructure"]),
+        (MarketStructureFeatures(), EXPECTED_PER_GROUP["market_structure"]),
     ],
 )
 def test_per_symbol_feature_count_and_naming(group, expected) -> None:
@@ -208,9 +212,7 @@ def test_build_feature_matrix_end_to_end(
 
     assert not panel.empty
     n_feature_cols = sum(1 for c in panel.columns if c not in ("symbol", "bar_date"))
-    # Total feature count ≈ 53 (53 = price 8 + trend 10 + momentum 8 + vol 6 + volume 5 + micro 5 + xs 6 + regime 5).
-    # We also retain raw OHLCV passthroughs from the per-symbol concat (5 cols).
-    # So just assert >= the 53 advertised features.
-    assert n_feature_cols >= 53, n_feature_cols
+    # Total advertised: 84 = 8+16+16+13+10+6+4+6+5
+    assert n_feature_cols >= 84, n_feature_cols
     # Symbols and dates as expected
     assert set(panel["symbol"].unique()) == {"SYM0", "SYM1", "SYM2"}

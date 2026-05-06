@@ -18,7 +18,10 @@ def _wilder_smooth(s: pd.Series, period: int) -> pd.Series:
     return s.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
 
 
-def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+def _adx_components(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Return (ADX, +DI, -DI) for the given period using Wilder's smoothing."""
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=high.index)
@@ -37,7 +40,31 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     plus_di = 100.0 * _wilder_smooth(plus_dm, period) / atr
     minus_di = 100.0 * _wilder_smooth(minus_dm, period) / atr
     dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0.0, np.nan)
-    return _wilder_smooth(dx, period)
+    adx = _wilder_smooth(dx, period)
+    return adx, plus_di, minus_di
+
+
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    return _adx_components(high, low, close, period)[0]
+
+
+def _aroon(high: pd.Series, low: pd.Series, period: int = 25) -> tuple[pd.Series, pd.Series]:
+    """Aroon Up/Down: how recently the trailing window's extreme occurred.
+
+    aroon_up    = 100 * (period - bars_since_high) / period
+    aroon_down  = 100 * (period - bars_since_low)  / period
+    """
+    def _bars_since_argmax(arr: np.ndarray) -> float:
+        return float(period - 1 - int(np.argmax(arr)))
+
+    def _bars_since_argmin(arr: np.ndarray) -> float:
+        return float(period - 1 - int(np.argmin(arr)))
+
+    bars_since_high = high.rolling(period, min_periods=period).apply(_bars_since_argmax, raw=True)
+    bars_since_low = low.rolling(period, min_periods=period).apply(_bars_since_argmin, raw=True)
+    aroon_up = 100.0 * (period - bars_since_high) / period
+    aroon_down = 100.0 * (period - bars_since_low) / period
+    return aroon_up, aroon_down
 
 
 class TrendFeatures(FeatureGroup):
@@ -70,10 +97,22 @@ class TrendFeatures(FeatureGroup):
         out[f"{self.name}__macd_signal"] = macd_signal.values
         out[f"{self.name}__macd_histogram"] = (macd - macd_signal).values
 
-        out[f"{self.name}__adx_14"] = _adx(high, low, close, 14).values
+        adx14, plus_di14, minus_di14 = _adx_components(high, low, close, 14)
+        out[f"{self.name}__adx_14"] = adx14.values
+        out[f"{self.name}__di_plus_14"] = plus_di14.values
+        out[f"{self.name}__di_minus_14"] = minus_di14.values
+        out[f"{self.name}__di_diff_14"] = (plus_di14 - minus_di14).values
+
         out[f"{self.name}__price_to_sma200_ratio"] = (close / sma200 - 1.0).values
 
         rolling_high_252 = high.rolling(window=252, min_periods=252).max()
         out[f"{self.name}__distance_from_52w_high"] = (close / rolling_high_252 - 1.0).values
+
+        # Aroon (25-period). Distinct family from MACD/ADX — measures recency
+        # of the rolling-window extremes rather than smoothed price differences.
+        aroon_up, aroon_down = _aroon(high, low, 25)
+        out[f"{self.name}__aroon_up_25"] = aroon_up.values
+        out[f"{self.name}__aroon_down_25"] = aroon_down.values
+        out[f"{self.name}__aroon_oscillator_25"] = (aroon_up - aroon_down).values
 
         return out

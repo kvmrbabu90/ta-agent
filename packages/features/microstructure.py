@@ -30,6 +30,10 @@ class MicrostructureFeatures(FeatureGroup):
         lower_wick = close.where(close < open_, open_) - low
         out[f"{self.name}__upper_wick_pct"] = (upper_wick / (rng + _EPS)).values
         out[f"{self.name}__lower_wick_pct"] = (lower_wick / (rng + _EPS)).values
+        # Wick balance: ratio of upper to lower wick. Skewed candles indicate
+        # rejection from one side. Bounded with +EPS so a zero lower wick
+        # produces a finite (large) value rather than inf.
+        out[f"{self.name}__wick_ratio"] = (upper_wick / (lower_wick + _EPS)).values
 
         out[f"{self.name}__gap_pct"] = (open_ / close.shift(1) - 1.0).values
 
