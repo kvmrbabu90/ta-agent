@@ -127,7 +127,25 @@ adjustment errors):
 python -m scripts.audit_corporate_actions --universe SP500 --lookback 365
 ```
 
-### 7. Query membership at any past date
+### 7. Build features and labels
+
+Generate the technical-feature panel:
+
+```powershell
+python -m scripts.build_features --universe SP500 --start 2014-01-01 --end 2024-12-31
+```
+
+Then assemble the master training dataset (features + labels):
+
+```powershell
+python -m scripts.build_dataset --universe SP500 --start 2014-01-01 --end 2024-12-31 --horizon 5
+```
+
+The output parquet has `symbol, bar_date, <feature columns>, fwd_return_5d,
+fwd_quintile_5d, in_universe`. Modeling code must filter to
+`in_universe == True` AND non-null labels before training.
+
+### 8. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on
