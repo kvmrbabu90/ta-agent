@@ -60,6 +60,29 @@ KITE_ACCESS_TOKEN=
 
 Never commit `.env` (it's in `.gitignore`).
 
+### Kite authentication
+
+Zerodha's Kite Connect access tokens **expire daily at ~6am IST**. Refreshing
+requires interactive browser login — this cannot be automated.
+
+To mint a fresh token:
+
+```powershell
+python -m scripts.kite_login
+```
+
+The script will:
+1. Print a login URL — open it in any browser.
+2. After you log in, Zerodha redirects to your registered redirect URL with
+   a `request_token=...` query parameter. Copy that value.
+3. Paste the `request_token` back at the prompt.
+4. The script exchanges it and prints a `KITE_ACCESS_TOKEN=...` line.
+
+Paste that line into `.env` (replacing any previous `KITE_ACCESS_TOKEN`),
+then re-run whatever command needed it. Backfills and `daily_update` will
+abort with a clear log message if the token is missing or rejected — they
+never try to auto-refresh.
+
 ### 4. Run the tests
 
 ```powershell
