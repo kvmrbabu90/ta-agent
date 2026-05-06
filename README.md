@@ -236,7 +236,41 @@ Endpoints:
 CORS is preconfigured for `http://localhost:5173` (Vite default) and
 `http://localhost:3000`.
 
-### 12. Query membership at any past date
+### 12. Run the frontend
+
+The React + Vite + TypeScript frontend lives in `services/frontend/`.
+First-time setup:
+
+```powershell
+cd services/frontend
+npm install
+copy .env.example .env.local   # or set VITE_API_BASE_URL however you like
+```
+
+Then in two terminals:
+
+```powershell
+# terminal 1: backend
+uvicorn services.api.main:app --reload
+
+# terminal 2: frontend
+cd services/frontend
+npm run dev
+```
+
+Browse [http://localhost:5173](http://localhost:5173). Three pages:
+
+- **Dashboard** (`/`): top long / short picks per universe, with a
+  high-confidence section filtered by quintile probability.
+- **Stock detail** (`/stocks/{universe}/{symbol}`): close + 20/50-day
+  SMA, SHAP attribution for the most recent prediction, prediction
+  history with hit/miss markers.
+- **Performance** (`/performance`): mean daily IC, t-stat, hit rate,
+  decile spread, IC time series, classifier calibration table.
+
+Build for production: `npm run build` produces `dist/`.
+
+### 13. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on
