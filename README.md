@@ -1,38 +1,56 @@
 # ta-agent
 
-Technical-analysis ML agent for **S&P 500** and **NIFTY 100** universes.
+**Local-only ML pipeline for ranking S&P 500 and NIFTY 100 stocks by predicted 5-day forward return.**
 
-- **Bars:** daily
-- **Horizon:** 1-week forward returns
-- **Models:** LightGBM regression + classification per universe (4 models total)
-- **Data sources:** Interactive Brokers (US), Kite Connect (India), yfinance (sanity check)
-- **Survivorship-bias-free:** point-in-time index membership
+Daily bars in, ranked picks out. Two LightGBM models per universe — one
+regression on 5-day forward log returns, one classification into
+cross-sectional quintiles — served by a FastAPI backend and a small React
+dashboard. Designed to be **scientifically honest**: survivorship-bias-free
+universes, look-ahead-free features, purged walk-forward CV with embargo,
+calibrated probabilities, and red-flag thresholds for "too good" metrics.
+
+> ⚠️ This is a research project, not investment advice. See the disclaimer at the bottom.
 
 ## Status
 
-- [x] Project scaffolding
-- [x] DuckDB storage layer with idempotent upserts
-- [x] Point-in-time S&P 500 membership (from Wikipedia)
-- [x] NIFTY 100 current-constituents loader (Phase A)
-- [ ] IB adapter (US daily bars)
-- [ ] Kite adapter (India daily bars)
-- [ ] yfinance adapter (backup)
-- [ ] Corporate actions adjustment
-- [ ] Feature engineering
-- [ ] Label generation
-- [ ] Purged walk-forward CV + LightGBM training
-- [ ] FastAPI backend
-- [ ] React frontend
+- [x] Data ingestion: Interactive Brokers (US), Kite Connect (NSE), yfinance (fallback + macro)
+- [x] Point-in-time S&P 500 membership; current-snapshot NIFTY 100 (PIT for India deferred)
+- [x] DuckDB storage with idempotent upserts
+- [x] Corporate-actions cross-source audit
+- [x] ~100 technical features across 11 groups (price, trend, momentum, volatility, volume, microstructure, market structure, cross-sectional, regime, volume profile, swings/Fib) + optional macro
+- [x] Forward returns and cross-sectional quintile labels (PIT-respecting)
+- [x] Purged walk-forward CV, LightGBM training, Optuna tuning, isotonic calibration, file-based model registry
+- [x] Daily inference + SHAP top-K + SQLite predictions log + automatic settlement
+- [x] FastAPI backend (read-only) at `:8000` with OpenAPI docs at `/docs`
+- [x] React + Vite + TypeScript frontend at `:5173` (Dashboard / Stock detail / Performance)
+- [x] APScheduler-based orchestrator + monthly retrain with promote/retain
+- [x] Health-check script + ops scripts (freshen, backtest summary)
+- [x] 140 unit tests + 4 integration tests
+
+## Architecture
+
+See [`docs/architecture.md`](docs/architecture.md) for diagrams and details.
+
+```
+data/processed/
+    market.duckdb          (OHLCV + membership + macro)
+    predictions.sqlite     (predictions log)
+    features_*.parquet     (wide feature panel per universe)
+    training_*.parquet     (features + labels + in_universe)
+data/models/
+    {universe}_{target}_{ts}/   (model.txt, calibrators.pkl, metadata.json, feature_importance.csv)
+    retrain_reports/{date}.json (promote/retain decisions)
+```
 
 ## Setup (Windows native)
 
-### 1. Install uv
+### 1. Install `uv`
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Restart the terminal so `uv` is on PATH.
+Restart the shell so `uv` is on PATH.
 
 ### 2. Install Python and create the project venv
 
@@ -44,9 +62,16 @@ uv venv --python 3.11
 uv pip install -e ".[dev]"
 ```
 
-### 3. Configure secrets
+### 3. (Optional) install pre-commit hooks
 
-Create a `.env` file in the project root:
+```powershell
+pip install pre-commit
+pre-commit install
+```
+
+### 4. Configure secrets
+
+Copy `.env.example` to `.env` and fill in:
 
 ```
 IB_HOST=127.0.0.1
@@ -55,261 +80,211 @@ IB_CLIENT_ID=1
 
 KITE_API_KEY=your_key_here
 KITE_API_SECRET=your_secret_here
-KITE_ACCESS_TOKEN=
+KITE_ACCESS_TOKEN=                   # blank — minted via scripts.kite_login
 ```
 
-Never commit `.env` (it's in `.gitignore`).
+`.env` is gitignored. Don't commit it.
 
 ### Kite authentication
 
-Zerodha's Kite Connect access tokens **expire daily at ~6am IST**. Refreshing
-requires interactive browser login — this cannot be automated.
-
-To mint a fresh token:
+Zerodha access tokens **expire daily ~6am IST**. Re-mint with:
 
 ```powershell
 python -m scripts.kite_login
 ```
 
-The script will:
-1. Print a login URL — open it in any browser.
-2. After you log in, Zerodha redirects to your registered redirect URL with
-   a `request_token=...` query parameter. Copy that value.
-3. Paste the `request_token` back at the prompt.
-4. The script exchanges it and prints a `KITE_ACCESS_TOKEN=...` line.
+The script prints a login URL → you log in in a browser → it asks for the
+`request_token` from the redirect URL → it prints the new
+`KITE_ACCESS_TOKEN` line to add to `.env`.
 
-Paste that line into `.env` (replacing any previous `KITE_ACCESS_TOKEN`),
-then re-run whatever command needed it. Backfills and `daily_update` will
-abort with a clear log message if the token is missing or rejected — they
-never try to auto-refresh.
+## First-time bootstrap
 
-### 4. Run the tests
+This is what you run once to take the system from empty to producing
+ranked picks. After this, normal operation is just `python -m
+jobs.scheduler` (or running daily jobs by hand).
 
 ```powershell
-pytest -v
-```
-
-### 5. Build point-in-time index membership
-
-```powershell
+# 1. Membership tables
 python -m scripts.refresh_universes --show
+
+# 2. Macro series (optional but enables the macro feature group)
+python -m scripts.refresh_macro
+
+# 3. Backfill OHLCV (one universe at a time; takes hours per universe)
+#    For the IB run, start TWS or IB Gateway in paper mode first.
+python -m scripts.ib_backfill   --universe SP500    --start 2014-01-01 --end 2024-12-31
+python -m scripts.kite_backfill --universe NIFTY100 --start 2014-01-01 --end 2024-12-31
+
+# 4. Build the master training datasets (features + labels join)
+python -m scripts.build_dataset --universe SP500    --start 2014-01-01 --end 2024-12-31
+python -m scripts.build_dataset --universe NIFTY100 --start 2014-01-01 --end 2024-12-31
+
+# 5. Train both targets for both universes (with Optuna --tune)
+python -m scripts.train_models --universe SP500    --target regression     --dataset data/processed/training_sp500.parquet    --tune
+python -m scripts.train_models --universe SP500    --target classification --dataset data/processed/training_sp500.parquet    --tune
+python -m scripts.train_models --universe NIFTY100 --target regression     --dataset data/processed/training_nifty100.parquet --tune
+python -m scripts.train_models --universe NIFTY100 --target classification --dataset data/processed/training_nifty100.parquet --tune
+
+# 6. Generate today's predictions and confirm the system is healthy
+python -m jobs.daily_predict
+python -m scripts.healthcheck
+
+# 7. Start the API and frontend (separate terminals)
+uvicorn services.api.main:app --reload --host 0.0.0.0 --port 8000
+cd services/frontend; npm install; npm run dev
 ```
 
-This scrapes Wikipedia for S&P 500 history and the niftyindices.com CSV for
-NIFTY 100, then writes everything into `data/processed/market.duckdb`.
+Browse <http://localhost:5173>.
 
-You only need to run this once a quarter or so (when index reconstitutions
-happen) — but it's also safe to run any time, since upserts are idempotent.
+## Daily operation
 
-### 6. Macro series (optional)
+After bootstrap, you have two options.
 
-The pipeline registers macro features (VIX, USD/INR) **only if** the
-`macro_daily` table has data. To populate it:
+### Option A — let the scheduler run
 
 ```powershell
-python -m scripts.refresh_macro
+python -m jobs.scheduler
 ```
 
-This pulls `^VIX` and `INR=X` from yfinance into a separate DuckDB table.
-Once present, three macro features appear on every (symbol, bar_date) row:
-`macro__vix_level_z_252`, `macro__vix_chg_5d`, `macro__fx_ret_5d`.
+This is a long-running blocking process. It runs daily ingest after each
+market close, daily predict shortly after, settles mature predictions,
+retrains monthly on the first weekday, and refreshes universe membership
+quarterly. Keep it running in a terminal you don't close. It logs heavily
+to both stderr and `logs/ta_agent_{date}.log`. See
+[`docs/architecture.md`](docs/architecture.md) for the full schedule.
 
-### 7. Daily ingest
-
-The unified `daily_ingest` job pulls fresh bars from IB (S&P 500), Kite
-(NIFTY 100), and falls back to yfinance for any symbols that fail in their
-primary source:
+### Option B — run jobs manually
 
 ```powershell
 python -m jobs.daily_ingest
-```
-
-Exit codes:
-- `0` — clean run (or skipped because today is not a trading day)
-- `1` — unexpected exception
-- `2` — coverage below 90% across the run
-- `3` — total per-symbol exceptions exceeded 50
-
-The job is idempotent and importable: `from jobs.daily_ingest import run`
-makes it scheduler-friendly (APScheduler integration in Phase 10).
-
-To audit inter-source price disagreements (potential split / dividend
-adjustment errors):
-
-```powershell
-python -m scripts.audit_corporate_actions --universe SP500 --lookback 365
-```
-
-### 8. Build features and labels
-
-Generate the technical-feature panel:
-
-```powershell
-python -m scripts.build_features --universe SP500 --start 2014-01-01 --end 2024-12-31
-```
-
-Then assemble the master training dataset (features + labels):
-
-```powershell
-python -m scripts.build_dataset --universe SP500 --start 2014-01-01 --end 2024-12-31 --horizon 5
-```
-
-The output parquet has `symbol, bar_date, <feature columns>, fwd_return_5d,
-fwd_quintile_5d, in_universe`. Modeling code must filter to
-`in_universe == True` AND non-null labels before training.
-
-### 9. Train models
-
-Once you have a training dataset on disk, run purged walk-forward CV +
-LightGBM training. Two models per universe (regression on the next 5-day
-log return, and classification on the cross-sectional quintile):
-
-```powershell
-python -m scripts.train_models --universe SP500 --target regression --dataset data/processed/training_sp500_2014-01-01_2024-12-31.parquet --tune --n-trials 50
-
-python -m scripts.train_models --universe SP500 --target classification --dataset data/processed/training_sp500_2014-01-01_2024-12-31.parquet --tune --n-trials 50
-```
-
-What runs:
-- 5-fold purged walk-forward CV with a 5-day embargo (no label leakage)
-- Optional Optuna search (`--tune`) over the 7 main hyperparameters
-- A final production model trained on data through `today - 60 days`,
-  with the last 60 days as the early-stopping holdout
-- For classification: per-class isotonic calibration on a slice strictly
-  before the early-stopping window
-- Model + metadata + feature_importance.csv saved under `data/models/`
-
-If the model produces IC > 0.15, hit-rate > 65%, or top-bottom decile
-spread > 2%/week — STOP. Those are red-flag levels for retail equities;
-look for a leakage bug.
-
-### 10. Daily predict
-
-After Phase 6 has produced trained models for both universes, the
-prediction job loads the latest models, builds inference features for
-current members, predicts, and persists to a SQLite predictions log:
-
-```powershell
 python -m jobs.daily_predict
 ```
 
-What runs:
-- Settles any open predictions whose 5-day horizon has now closed
-  (computes realized log return + cross-sectional realized quintile)
-- Skips per-universe automatically on non-trading days (NYSE / NSE)
-- Loads latest registered regression + classification models
-- Builds inference features through `as_of` and validates that every
-  feature the model expects is present, in the right order
-- Logs predictions to `data/processed/predictions.sqlite` (idempotent —
-  re-running the same day overwrites prediction columns but preserves
-  any already-realized fields)
-- Prints top-N long / short picks per universe
-
-For SHAP attributions on individual picks, use
-`packages.inference.explain.explain_predictions(...)` from a notebook or
-the API server (Phase 8).
-
-### 11. Run the API
-
-The FastAPI backend serves predictions, performance, and SHAP explanations
-to the frontend (Phase 9) and to anything else you want to point at it:
+In either mode, refresh the Kite token once a day:
 
 ```powershell
-uvicorn services.api.main:app --reload
+python -m scripts.kite_login
 ```
 
-Then open [http://localhost:8000/docs](http://localhost:8000/docs) for the
-interactive Swagger UI. All endpoints are read-only (`GET`); the API never
-triggers training or predictions — those run via `jobs/daily_predict.py`
-and `scripts/train_models.py`.
+## Common tasks
 
-Endpoints:
-- `GET /health`
-- `GET /universes`
-- `GET /universes/{universe}/members?as_of=YYYY-MM-DD`
-- `GET /predictions/top?universe=&direction=long|short&limit=20&as_of=`
-- `GET /predictions/{universe}/{symbol}?lookback_days=180`
-- `GET /stocks/{symbol}/ohlcv?start=&end=`
-- `GET /performance/{universe}?lookback_days=90`
-- `GET /explain/{universe}/{symbol}?as_of=&top_k=5`
+POSIX `make`:
 
-CORS is preconfigured for `http://localhost:5173` (Vite default) and
-`http://localhost:3000`.
+```bash
+make help        # list targets
+make test        # pytest
+make lint        # ruff check
+make ingest      # run daily_ingest
+make predict     # run daily_predict
+make health      # run healthcheck
+make api         # run uvicorn
+make frontend    # run vite dev
+make scheduler   # run jobs.scheduler
+make retrain     # run jobs.monthly_retrain
+```
 
-### 12. Run the frontend
-
-The React + Vite + TypeScript frontend lives in `services/frontend/`.
-First-time setup:
+PowerShell-native (no `make`):
 
 ```powershell
-cd services/frontend
-npm install
-copy .env.example .env.local   # or set VITE_API_BASE_URL however you like
+.\make.ps1 help
+.\make.ps1 test
+.\make.ps1 health
+# ... same target names
 ```
 
-Then in two terminals:
+## Troubleshooting
 
-```powershell
-# terminal 1: backend
-uvicorn services.api.main:app --reload
+**"No predictions for today" in the dashboard.**
+The dashboard shows whatever the API returns from `MAX(as_of)` — meaning
+the most recent date with logged predictions. If predictions are stale or
+missing, run `python -m jobs.daily_predict`. If that errors, check
+`python -m scripts.healthcheck` — it'll tell you whether OHLCV, membership,
+or models are missing.
 
-# terminal 2: frontend
-cd services/frontend
-npm run dev
-```
+**`ConnectionRefusedError` from IB.**
+TWS or IB Gateway isn't running, or the API socket isn't enabled.
+- Start IB Gateway in paper mode (port 7497).
+- In Configure → API → Settings, check **Enable ActiveX and Socket Clients**.
+- Add `127.0.0.1` to **Trusted IPs**.
 
-Browse [http://localhost:5173](http://localhost:5173). Three pages:
+**`kiteconnect.exceptions.TokenException`.**
+Your Kite access token has expired (they reset around 6am IST). Re-run
+`python -m scripts.kite_login` and update `.env`. The ingest job aborts
+cleanly on token expiry — no auto-refresh, on purpose.
 
-- **Dashboard** (`/`): top long / short picks per universe, with a
-  high-confidence section filtered by quintile probability.
-- **Stock detail** (`/stocks/{universe}/{symbol}`): close + 20/50-day
-  SMA, SHAP attribution for the most recent prediction, prediction
-  history with hit/miss markers.
-- **Performance** (`/performance`): mean daily IC, t-stat, hit rate,
-  decile spread, IC time series, classifier calibration table.
+**Tests fail after pulling new code.**
+Run `uv pip install -e ".[dev]"` again to pick up new deps. If you still
+see import errors, your `.venv` may be stale — recreate it:
+`rm -rf .venv && uv venv --python 3.11 && uv pip install -e ".[dev]"`.
 
-Build for production: `npm run build` produces `dist/`.
+**Frontend can't reach the API.**
+Confirm `uvicorn services.api.main:app` is running on port 8000. The
+frontend reads `VITE_API_BASE_URL` from `services/frontend/.env.local`
+(default `http://localhost:8000`). Both `:5173` and `:3000` are in the
+backend's CORS allow-list.
 
-### 13. Query membership at any past date
+**Memory / disk space.**
+A full 10-year backfill of both universes is ~3M OHLCV rows. DuckDB
+compresses this aggressively (~100–200 MB on disk). Trained model
+artifacts are tiny (~5–10 MB each). The frontend dev server's
+`node_modules` is the biggest item by far (~250 MB).
 
-```python
-from packages.ingestion.universe.membership import members_on
-print(members_on("SP500", "2018-06-15").head())
-```
+## Known limitations
 
-## Project layout
-
-```
-packages/
-  common/          # config, logging, schemas — shared by everything
-  ingestion/       # data adapters + storage + universe membership
-  features/        # technical indicator feature engineering
-  labels/          # forward returns + classification labels
-  modeling/        # CV, training, calibration, evaluation
-  inference/       # daily prediction + SHAP attribution
-services/
-  api/             # FastAPI backend
-  frontend/        # React + Vite frontend
-jobs/              # scheduled daily/monthly tasks
-configs/           # YAML configs (universes, models)
-scripts/           # one-shot CLI utilities
-tests/             # unit + integration tests
-data/              # local data (gitignored)
-  raw/             # adapter dumps
-  processed/       # DuckDB + parquet
-  models/          # serialized LightGBM models + metadata
-```
+1. **NIFTY 100 PIT membership is a current-only snapshot.** Pre-rebalance
+   dates are therefore survivorship-biased on the India side. Documented
+   in `01_PRD.md` as Phase B work; not done in v1.
+2. **Earnings-window and news-sentiment features are not implemented.**
+   Both have well-defined extension points in
+   `packages/features/extensions.py`; pick a data provider (Finnhub, FMP,
+   NewsAPI, …) and write the adapter to wire them in.
+3. **Volume-profile features are a daily-bar approximation.** Real volume
+   profile uses intraday data, which we don't ingest.
+4. **`pandas-ta` is not a dependency.** All ~100 technical indicators are
+   hand-rolled — `pandas-ta` requires Python 3.12+ and is effectively
+   unmaintained.
+5. **Frontend bundle is ~180 KB gzipped** (Recharts dominates). Acceptable
+   for a single-user internal tool; route-level code splitting is the
+   natural future lever.
+6. **Single-user, local only.** No login, no auth, no multi-tenancy. The
+   API is read-only; the frontend cannot trigger training or predictions.
+7. **All times in the scheduler are pinned to UTC** to dodge DST. Local
+   firing time drifts by ±1 hour across DST boundaries — well after market
+   close in either timezone, so this is OK in practice.
 
 ## Realistic expectations
 
-This is a research project, not a money-printing machine. Calibrated targets:
+Calibrated targets for the held-out IC and decile spread:
 
-| Metric | Decent | Good | Suspicious (check leakage) |
-| --- | --- | --- | --- |
-| Information Coefficient (IC) | 0.02–0.05 | 0.05–0.08 | > 0.08 |
-| Top-decile minus bottom-decile weekly return spread | 0.3% | 0.5–0.8% | > 1.5% |
+| metric | decent | good | suspicious (look for leakage) |
+|---|---|---|---|
+| Information coefficient (IC) | 0.02–0.05 | 0.05–0.08 | > 0.08 |
+| Top-decile minus bottom-decile weekly return spread | ~0.3% | 0.5–0.8% | > 1.5% |
 | Directional hit rate | 52–55% | 55–58% | > 60% |
 
-Always paper-trade for 3–6 months before risking real capital, and compare
-live predictions against realized outcomes. None of this output constitutes
-investment advice.
+If a freshly-trained model lands in the "suspicious" column, **stop and
+look for a leakage bug**. The PRD lists the usual culprits.
+
+Always paper-trade for 3–6 months before risking real capital, and
+compare live predictions against realized outcomes via the Performance
+page.
+
+## Pre-commit hooks
+
+```powershell
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files   # one-time check before committing
+```
+
+The config is at `.pre-commit-config.yaml`: ruff (with `--fix` and
+`ruff-format`), trailing whitespace, end-of-file fixer, YAML/JSON syntax
+checks, large-file blocker, and merge-conflict / private-key detectors.
+
+## Disclaimer
+
+This software produces ranked stock predictions for personal research.
+Predictions are not a recommendation to buy, sell, or hold any security.
+Past model performance — even on held-out data — does not guarantee
+future performance. The author is not a registered investment advisor.
+Use at your own risk.
