@@ -101,7 +101,33 @@ NIFTY 100, then writes everything into `data/processed/market.duckdb`.
 You only need to run this once a quarter or so (when index reconstitutions
 happen) — but it's also safe to run any time, since upserts are idempotent.
 
-### 6. Query membership at any past date
+### 6. Daily ingest
+
+The unified `daily_ingest` job pulls fresh bars from IB (S&P 500), Kite
+(NIFTY 100), and falls back to yfinance for any symbols that fail in their
+primary source:
+
+```powershell
+python -m jobs.daily_ingest
+```
+
+Exit codes:
+- `0` — clean run (or skipped because today is not a trading day)
+- `1` — unexpected exception
+- `2` — coverage below 90% across the run
+- `3` — total per-symbol exceptions exceeded 50
+
+The job is idempotent and importable: `from jobs.daily_ingest import run`
+makes it scheduler-friendly (APScheduler integration in Phase 10).
+
+To audit inter-source price disagreements (potential split / dividend
+adjustment errors):
+
+```powershell
+python -m scripts.audit_corporate_actions --universe SP500 --lookback 365
+```
+
+### 7. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on
