@@ -86,6 +86,8 @@ ignore = ["E501"]
 "scripts/train_models.py" = ["N803", "N806"]
 "tests/unit/test_train.py" = ["N803", "N806"]
 "tests/unit/test_evaluate.py" = ["N803", "N806"]
+"tests/unit/test_predict.py" = ["N803", "N806"]
+"tests/unit/test_explain.py" = ["N803", "N806"]
 "tests/integration/test_train_e2e.py" = ["N803", "N806"]
 
 [tool.pytest.ini_options]

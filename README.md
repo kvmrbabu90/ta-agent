@@ -183,7 +183,33 @@ If the model produces IC > 0.15, hit-rate > 65%, or top-bottom decile
 spread > 2%/week — STOP. Those are red-flag levels for retail equities;
 look for a leakage bug.
 
-### 10. Query membership at any past date
+### 10. Daily predict
+
+After Phase 6 has produced trained models for both universes, the
+prediction job loads the latest models, builds inference features for
+current members, predicts, and persists to a SQLite predictions log:
+
+```powershell
+python -m jobs.daily_predict
+```
+
+What runs:
+- Settles any open predictions whose 5-day horizon has now closed
+  (computes realized log return + cross-sectional realized quintile)
+- Skips per-universe automatically on non-trading days (NYSE / NSE)
+- Loads latest registered regression + classification models
+- Builds inference features through `as_of` and validates that every
+  feature the model expects is present, in the right order
+- Logs predictions to `data/processed/predictions.sqlite` (idempotent —
+  re-running the same day overwrites prediction columns but preserves
+  any already-realized fields)
+- Prints top-N long / short picks per universe
+
+For SHAP attributions on individual picks, use
+`packages.inference.explain.explain_predictions(...)` from a notebook or
+the API server (Phase 8).
+
+### 11. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on

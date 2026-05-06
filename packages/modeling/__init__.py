@@ -11,7 +11,12 @@ from packages.modeling.evaluate import (
     information_coefficient,
     rank_information_coefficient,
 )
-from packages.modeling.registry import ModelMetadata, load_latest_model, save_model
+from packages.modeling.registry import (
+    ModelMetadata,
+    find_latest_model_dir,
+    load_latest_model,
+    save_model,
+)
 from packages.modeling.splits import PurgedWalkForwardSplit
 from packages.modeling.train import (
     TrainConfig,
@@ -38,4 +43,5 @@ __all__ = [
     "ModelMetadata",
     "save_model",
     "load_latest_model",
+    "find_latest_model_dir",
 ]

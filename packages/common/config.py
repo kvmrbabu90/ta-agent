@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     # Storage
     duckdb_path: str = str(PROCESSED_DIR / "market.duckdb")
+    predictions_sqlite_path: str = str(PROCESSED_DIR / "predictions.sqlite")
 
     # Logging
     log_level: str = "INFO"

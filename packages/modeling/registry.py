@@ -96,11 +96,12 @@ def save_model(
     return out_dir
 
 
-def load_latest_model(
+def find_latest_model_dir(
     universe: str,
     target: str,
     base_dir: Path | str = MODELS_DIR,
-) -> tuple[lgb.Booster | CalibratedModel, dict[str, Any]]:
+) -> Path:
+    """Return the directory of the most recently saved model for (universe, target)."""
     base = Path(base_dir)
     if not base.exists():
         raise FileNotFoundError(f"models base dir does not exist: {base}")
@@ -115,7 +116,15 @@ def load_latest_model(
         raise FileNotFoundError(
             f"no saved model for universe={universe} target={target} in {base}"
         )
-    latest = candidates[-1]
+    return candidates[-1]
+
+
+def load_latest_model(
+    universe: str,
+    target: str,
+    base_dir: Path | str = MODELS_DIR,
+) -> tuple[lgb.Booster | CalibratedModel, dict[str, Any]]:
+    latest = find_latest_model_dir(universe, target, base_dir)
 
     with open(latest / "metadata.json") as f:
         metadata = json.load(f)
