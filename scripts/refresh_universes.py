@@ -11,13 +11,13 @@ from __future__ import annotations
 import click
 
 from packages.common.logging import log
+from packages.ingestion.storage import upsert_membership
 from packages.ingestion.universe.membership import (
     members_on,
     refresh_all_universes,
 )
 from packages.ingestion.universe.nifty100_history import build_nifty100_membership
 from packages.ingestion.universe.sp500_history import build_sp500_membership
-from packages.ingestion.storage import upsert_membership
 
 
 @click.command()

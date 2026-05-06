@@ -15,9 +15,9 @@ Why DuckDB rather than Postgres for this stage:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 import duckdb
 import pandas as pd
@@ -102,7 +102,7 @@ def upsert_ohlcv(df: pd.DataFrame, conn: duckdb.DuckDBPyConnection | None = None
     try:
         # Register the dataframe as a temporary view, then INSERT ... ON CONFLICT.
         conn.register("incoming_ohlcv", df)
-        result = conn.execute(
+        conn.execute(
             """
             INSERT INTO ohlcv_daily
                 (symbol, exchange, bar_date, open, high, low, close, volume,

@@ -12,14 +12,14 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
-class Exchange(str, Enum):
+class Exchange(str, Enum):  # noqa: UP042
     NYSE = "NYSE"
     NASDAQ = "NASDAQ"
     NSE = "NSE"
     BSE = "BSE"
 
 
-class Universe(str, Enum):
+class Universe(str, Enum):  # noqa: UP042
     SP500 = "SP500"
     NIFTY100 = "NIFTY100"
 

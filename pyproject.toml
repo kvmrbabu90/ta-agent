@@ -81,6 +81,10 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: tests that hit live external APIs; deselected by default. Run with: pytest -m integration",
+]
+addopts = "-m 'not integration'"
 
 [tool.setuptools.packages.find]
 where = ["."]

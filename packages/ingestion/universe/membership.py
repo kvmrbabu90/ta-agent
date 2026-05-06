@@ -38,8 +38,6 @@ def members_on(universe: str, as_of: str | date) -> pd.DataFrame:
 
 def all_symbols_ever(universe: str) -> list[str]:
     """All symbols that have ever been in this universe (for batch ingestion)."""
-    df = query_membership_at(universe, "2099-12-31")  # Future date returns nothing
-    # We need a different query — get every symbol regardless of date.
     from packages.ingestion.storage import get_conn
     with get_conn() as conn:
         rows = conn.execute(
