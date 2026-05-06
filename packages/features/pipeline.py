@@ -23,14 +23,18 @@ import pandas as pd
 from packages.common.logging import log
 from packages.features.base import FeatureGroup, PanelFeatureGroup
 from packages.features.cross_sectional import CrossSectionalFeatures
+from packages.features.macro import MacroFeatures
 from packages.features.market_structure import MarketStructureFeatures
 from packages.features.microstructure import MicrostructureFeatures
 from packages.features.momentum import MomentumFeatures
 from packages.features.price import PriceFeatures
 from packages.features.regime import RegimeFeatures
+from packages.features.swings import SwingFeatures
 from packages.features.trend import TrendFeatures
 from packages.features.volatility import VolatilityFeatures
 from packages.features.volume import VolumeFeatures
+from packages.features.volume_profile import VolumeProfileFeatures
+from packages.ingestion.macro import has_macro_data
 from packages.ingestion.storage import get_conn, get_ohlcv
 
 # Order matters: panel groups (cross-sectional, regime) read columns produced
@@ -43,12 +47,27 @@ PER_SYMBOL_GROUPS: list[FeatureGroup] = [
     VolumeFeatures(),
     MicrostructureFeatures(),
     MarketStructureFeatures(),
+    VolumeProfileFeatures(),
+    SwingFeatures(),
 ]
 
-PANEL_GROUPS: list[PanelFeatureGroup] = [
+# Panel groups depend on data presence — see _resolve_panel_groups.
+_BASE_PANEL_GROUPS: list[PanelFeatureGroup] = [
     CrossSectionalFeatures(),
     RegimeFeatures(),
 ]
+
+
+def _resolve_panel_groups(duckdb_path: str | None) -> list[PanelFeatureGroup]:
+    """Always include cross-sectional + regime; conditionally append macro
+    when macro_daily has data (otherwise the column would be a NaN sea)."""
+    groups: list[PanelFeatureGroup] = list(_BASE_PANEL_GROUPS)
+    try:
+        if has_macro_data(duckdb_path=duckdb_path):
+            groups.append(MacroFeatures(duckdb_path=duckdb_path))
+    except Exception as exc:  # noqa: BLE001 — macro data is optional, never fail the run
+        log.debug(f"macro presence check failed (continuing without macro): {exc!r}")
+    return groups
 
 
 def _all_symbols_in_window(
@@ -161,7 +180,8 @@ def build_feature_matrix(
     panel = pd.concat(rows, axis=0, ignore_index=True)
 
     # Run panel groups; they return (symbol, bar_date, panel_features...). Merge.
-    for pg in PANEL_GROUPS:
+    panel_groups = _resolve_panel_groups(duckdb_path)
+    for pg in panel_groups:
         pf = pg.compute(panel)
         panel = panel.merge(pf, on=["symbol", "bar_date"], how="left")
 

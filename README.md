@@ -101,7 +101,20 @@ NIFTY 100, then writes everything into `data/processed/market.duckdb`.
 You only need to run this once a quarter or so (when index reconstitutions
 happen) — but it's also safe to run any time, since upserts are idempotent.
 
-### 6. Daily ingest
+### 6. Macro series (optional)
+
+The pipeline registers macro features (VIX, USD/INR) **only if** the
+`macro_daily` table has data. To populate it:
+
+```powershell
+python -m scripts.refresh_macro
+```
+
+This pulls `^VIX` and `INR=X` from yfinance into a separate DuckDB table.
+Once present, three macro features appear on every (symbol, bar_date) row:
+`macro__vix_level_z_252`, `macro__vix_chg_5d`, `macro__fx_ret_5d`.
+
+### 7. Daily ingest
 
 The unified `daily_ingest` job pulls fresh bars from IB (S&P 500), Kite
 (NIFTY 100), and falls back to yfinance for any symbols that fail in their
@@ -127,7 +140,7 @@ adjustment errors):
 python -m scripts.audit_corporate_actions --universe SP500 --lookback 365
 ```
 
-### 7. Build features and labels
+### 8. Build features and labels
 
 Generate the technical-feature panel:
 
@@ -145,7 +158,7 @@ The output parquet has `symbol, bar_date, <feature columns>, fwd_return_5d,
 fwd_quintile_5d, in_universe`. Modeling code must filter to
 `in_universe == True` AND non-null labels before training.
 
-### 8. Query membership at any past date
+### 9. Query membership at any past date
 
 ```python
 from packages.ingestion.universe.membership import members_on
