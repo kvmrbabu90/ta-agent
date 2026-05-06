@@ -1,0 +1,87 @@
+[project]
+name = "ta-agent"
+version = "0.1.0"
+description = "Technical analysis ML agent for S&P 500 and NIFTY 100"
+requires-python = ">=3.11"
+readme = "README.md"
+
+dependencies = [
+    # Data
+    "duckdb>=1.0.0",
+    "pyarrow>=15.0.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "polars>=0.20.0",
+
+    # Market data adapters
+    "ib_insync>=0.9.86",
+    "kiteconnect>=5.0.1",
+    "yfinance>=0.2.40",
+
+    # ML
+    "lightgbm>=4.3.0",
+    "scikit-learn>=1.4.0",
+    "optuna>=3.6.0",
+    "shap>=0.45.0",
+
+    # Technical indicators — pandas-ta removed: current PyPI release requires
+    # Python>=3.12 and is effectively unmaintained. Choice deferred to Phase 4
+    # (likely pandas-ta-classic fork or write indicators directly).
+
+    # Web scraping for index membership
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.1.0",
+
+    # API
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlalchemy>=2.0.25",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.1.0",
+
+    # Config & logging
+    "pyyaml>=6.0.1",
+    "loguru>=0.7.2",
+    "click>=8.1.7",
+
+    # Scheduling
+    "apscheduler>=3.10.4",
+
+    # Time / market hours
+    "pandas-market-calendars>=4.4.0",
+    "pytz>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "ipykernel>=6.29.0",
+    "jupyter>=1.0.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["packages*"]

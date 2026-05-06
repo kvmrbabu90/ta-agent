@@ -1,0 +1,49 @@
+"""Unified interface for index membership queries across universes."""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pandas as pd
+
+from packages.common.logging import log
+from packages.ingestion.storage import query_membership_at, upsert_membership
+from packages.ingestion.universe.nifty100_history import build_nifty100_membership
+from packages.ingestion.universe.sp500_history import build_sp500_membership
+
+
+def refresh_all_universes() -> dict[str, int]:
+    """Rebuild and persist membership for all supported universes.
+
+    Returns a dict of universe -> rows written.
+    """
+    counts: dict[str, int] = {}
+
+    log.info("Refreshing S&P 500 membership")
+    sp = build_sp500_membership()
+    counts["SP500"] = upsert_membership(sp)
+
+    log.info("Refreshing NIFTY 100 membership")
+    ni = build_nifty100_membership()
+    counts["NIFTY100"] = upsert_membership(ni)
+
+    log.info(f"Universe refresh complete: {counts}")
+    return counts
+
+
+def members_on(universe: str, as_of: str | date) -> pd.DataFrame:
+    """List of symbols in `universe` on date `as_of` (point-in-time)."""
+    return query_membership_at(universe, str(as_of))
+
+
+def all_symbols_ever(universe: str) -> list[str]:
+    """All symbols that have ever been in this universe (for batch ingestion)."""
+    df = query_membership_at(universe, "2099-12-31")  # Future date returns nothing
+    # We need a different query — get every symbol regardless of date.
+    from packages.ingestion.storage import get_conn
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM index_membership WHERE universe = ? ORDER BY symbol",
+            [universe],
+        ).fetchall()
+    return [r[0] for r in rows]
