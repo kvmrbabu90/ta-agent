@@ -364,11 +364,19 @@ def test_backfill_universe_token_expired_mid_run_aborts(
 
 
 def test_kite_connection_raises_when_token_missing(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No env-var token AND no fallback session file → connection raises."""
     monkeypatch.setattr(kite_adapter.settings, "kite_access_token", "")
+    # Point the fallback path at a directory we know is empty.
+    monkeypatch.setattr(
+        kite_adapter.settings,
+        "kite_session_path",
+        str(tmp_path / "no-such-kite_session.json"),
+    )
     with (
-        pytest.raises(RuntimeError, match="KITE_ACCESS_TOKEN"),
+        pytest.raises(RuntimeError, match="No Kite access token"),
         kite_adapter._kite_connection(),
     ):
         pass

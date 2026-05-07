@@ -178,7 +178,13 @@ def fetch_daily_bars(
 
     ib_symbol = wiki_to_ib_symbol(symbol)
     duration_days = (end - start).days + 1
-    duration_str = f"{duration_days} D"
+    # IB rejects daily-bar requests > 365 days specified in days — must use
+    # years. Round up so we always cover the requested window.
+    if duration_days > 365:
+        duration_years = (duration_days + 364) // 365
+        duration_str = f"{duration_years} Y"
+    else:
+        duration_str = f"{duration_days} D"
     end_dt_str = f"{end.strftime('%Y%m%d')} 23:59:59"
 
     primary = exchange if exchange in _VALID_PRIMARY_EXCHANGES else ""

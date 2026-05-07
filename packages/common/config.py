@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # Storage
     duckdb_path: str = str(PROCESSED_DIR / "market.duckdb")
     predictions_sqlite_path: str = str(PROCESSED_DIR / "predictions.sqlite")
+    # Kite session token can be written here by the admin endpoint when the
+    # user logs in via the frontend; kite_adapter reads it as a fallback if
+    # the KITE_ACCESS_TOKEN env var is empty.
+    kite_session_path: str = str(PROCESSED_DIR / "kite_session.json")
 
     # Logging
     log_level: str = "INFO"

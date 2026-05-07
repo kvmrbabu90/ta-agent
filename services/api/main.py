@@ -18,6 +18,9 @@ from packages.common.config import settings
 from packages.common.logging import log
 from packages.inference.db import init_predictions_db
 from services.api.routes import (
+    admin as admin_routes,
+)
+from services.api.routes import (
     explain as explain_routes,
 )
 from services.api.routes import (
@@ -67,10 +70,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",  # Vite default
+        "http://localhost:5174",  # alt Vite port if 5173 is taken
         "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -80,6 +87,7 @@ app.include_router(predictions_routes.router)
 app.include_router(stocks_routes.router)
 app.include_router(performance_routes.router)
 app.include_router(explain_routes.router)
+app.include_router(admin_routes.router)
 
 
 @app.get("/health", tags=["meta"])

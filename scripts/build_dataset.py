@@ -60,7 +60,7 @@ def main(
         )
     )
     click.echo(
-        f"Wrote {len(df):,} rows × ({n_features} features + 2 labels + in_universe) → {out}"
+        f"Wrote {len(df):,} rows x ({n_features} features + 2 labels + in_universe) -> {out}"
     )
 
 

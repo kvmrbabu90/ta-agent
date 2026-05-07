@@ -231,9 +231,18 @@ artifacts are tiny (~5–10 MB each). The frontend dev server's
 
 ## Known limitations
 
-1. **NIFTY 100 PIT membership is a current-only snapshot.** Pre-rebalance
-   dates are therefore survivorship-biased on the India side. Documented
-   in `01_PRD.md` as Phase B work; not done in v1.
+1. **NIFTY 100 PIT membership is bootstrap-quality.** A hand-curated
+   change log lives at `configs/universes/nifty100_changes.yaml`. Run
+   `python -m scripts.refresh_universes --pit-india` to use it.
+   Empty YAML → behaves identically to the old current-snapshot loader
+   (Phase A); add entries from NSE press releases (at
+   <https://www.niftyindices.com/reports/historical-data/equity-indices>)
+   to incrementally fix survivorship bias. Audit coverage with
+   `python -m scripts.audit_nifty_pit`. Until the YAML covers ~12–14
+   semi-annual reconstitutions back to ~2018, NIFTY 100 backtests still
+   carry residual bias. The free-tier Indian data ecosystem doesn't
+   publish a machine-readable change history, so this is a manual job
+   spread across days.
 2. **Earnings-window and news-sentiment features are not implemented.**
    Both have well-defined extension points in
    `packages/features/extensions.py`; pick a data provider (Finnhub, FMP,

@@ -52,7 +52,7 @@ def main(
     panel.to_parquet(out_path, index=False)
 
     n_features = sum(1 for c in panel.columns if c not in ("symbol", "bar_date"))
-    click.echo(f"Wrote {len(panel):,} rows × {n_features} feature cols → {out_path}")
+    click.echo(f"Wrote {len(panel):,} rows x {n_features} feature cols -> {out_path}")
 
 
 if __name__ == "__main__":

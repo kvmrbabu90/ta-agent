@@ -24,19 +24,6 @@ _ZSCORE_INPUTS: dict[str, str] = {
 }
 
 
-def _xs_rank(series: pd.Series) -> pd.Series:
-    """Rank within group, normalized to [0, 1]; NaNs propagate."""
-    return series.rank(pct=True)
-
-
-def _xs_zscore(series: pd.Series) -> pd.Series:
-    mean = series.mean()
-    std = series.std()
-    if std == 0 or pd.isna(std):
-        return pd.Series([float("nan")] * len(series), index=series.index)
-    return (series - mean) / std
-
-
 class CrossSectionalFeatures(PanelFeatureGroup):
     name = "cross_sectional"
 
@@ -44,15 +31,18 @@ class CrossSectionalFeatures(PanelFeatureGroup):
         self._validate_input(panel)
         out = panel[["symbol", "bar_date"]].copy()
 
-        # Compute ranks/z-scores per bar_date — the only legal cross-section.
-        # ``transform`` preserves the original index alignment.
+        # Use pandas' built-in groupby methods rather than UDFs through
+        # ``.transform(func)`` — the UDF path has a known shape-handling
+        # edge case (`'Series' object has no attribute 'columns'`) that
+        # surfaces on small universes / sparse groups, and the built-ins
+        # are also significantly faster.
         for src_col, out_name in _RANK_INPUTS.items():
             if src_col not in panel.columns:
                 out[f"{self.name}__{out_name}"] = pd.NA
                 continue
             out[f"{self.name}__{out_name}"] = (
                 panel.groupby("bar_date", observed=True, sort=False)[src_col]
-                .transform(_xs_rank)
+                .rank(pct=True)
                 .values
             )
 
@@ -60,10 +50,10 @@ class CrossSectionalFeatures(PanelFeatureGroup):
             if src_col not in panel.columns:
                 out[f"{self.name}__{out_name}"] = pd.NA
                 continue
-            out[f"{self.name}__{out_name}"] = (
-                panel.groupby("bar_date", observed=True, sort=False)[src_col]
-                .transform(_xs_zscore)
-                .values
-            )
+            grp = panel.groupby("bar_date", observed=True, sort=False)[src_col]
+            mean = grp.transform("mean")
+            std = grp.transform("std")
+            zscore = (panel[src_col] - mean) / std.where(std != 0)
+            out[f"{self.name}__{out_name}"] = zscore.values
 
         return out

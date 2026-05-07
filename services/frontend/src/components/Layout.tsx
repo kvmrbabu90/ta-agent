@@ -1,4 +1,4 @@
-import { LineChart, Activity, LayoutDashboard } from 'lucide-react';
+import { Activity, LayoutDashboard, LineChart, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 
@@ -34,6 +34,10 @@ export function Layout({ children }: LayoutProps) {
             <NavLink to="/performance" className={navLinkClass}>
               <LineChart className="h-4 w-4" />
               Performance
+            </NavLink>
+            <NavLink to="/settings" className={navLinkClass}>
+              <Settings className="h-4 w-4" />
+              Settings
             </NavLink>
           </nav>
         </div>

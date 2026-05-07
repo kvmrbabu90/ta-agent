@@ -119,18 +119,27 @@ def _parse_changes_table(html: str) -> pd.DataFrame:
 
     df = tables[0]
 
-    # Flatten MultiIndex columns: ("Added", "Ticker") -> "added_ticker"
+    # Flatten MultiIndex columns. Wikipedia repeats the parent label when the
+    # child is the same (e.g. ("Effective Date", "Effective Date")), so dedupe
+    # consecutive identical levels before joining.
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [
-            "_".join(str(c).strip().lower() for c in col if str(c) != "nan").strip()
-            for col in df.columns
-        ]
+        flat = []
+        for col in df.columns:
+            parts = [str(c).strip().lower() for c in col if str(c) != "nan"]
+            deduped: list[str] = []
+            for p in parts:
+                if not deduped or deduped[-1] != p:
+                    deduped.append(p)
+            flat.append("_".join(deduped).strip())
+        df.columns = flat
 
-    # Normalize column names across Wikipedia's historical edits.
+    # Normalize column names across Wikipedia's historical edits. Wikipedia has
+    # used "Date", "Date added", and (currently) "Effective Date" — match any
+    # column whose label contains "date".
     col_map = {}
     for c in df.columns:
         cl = c.lower()
-        if cl == "date" or cl.startswith("date_"):
+        if "date" in cl:
             col_map[c] = "change_date"
         elif "added_ticker" in cl or cl == "added":
             col_map[c] = "added_ticker"

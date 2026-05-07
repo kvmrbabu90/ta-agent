@@ -89,20 +89,49 @@ def _create_kite() -> KiteConnect:
     return KiteConnect(api_key=settings.kite_api_key)
 
 
+def _resolve_access_token() -> str:
+    """Resolve the live Kite access token.
+
+    Order of preference:
+        1. ``KITE_ACCESS_TOKEN`` env / .env (settings).
+        2. ``data/processed/kite_session.json`` written by the admin
+           endpoint when the user logs in via the frontend.
+    Returns "" if neither is available — the connection context manager
+    raises a clear error in that case.
+    """
+    if settings.kite_access_token:
+        return settings.kite_access_token
+    import json
+    from pathlib import Path
+
+    p = Path(settings.kite_session_path)
+    if not p.exists():
+        return ""
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — corrupt file is a soft failure
+        log.warning(f"could not read kite_session at {p}: {exc!r}")
+        return ""
+    return str(data.get("access_token") or "")
+
+
 @contextmanager
 def _kite_connection() -> Iterator[KiteConnect]:
     """Yield an authenticated KiteConnect client.
 
-    Aborts immediately if ``KITE_ACCESS_TOKEN`` is not set — the user must
-    run ``scripts.kite_login`` first to mint a fresh token (they expire daily).
+    Aborts immediately if no access token is available — the user must
+    log in via the frontend Settings page or run ``scripts.kite_login``
+    first (tokens expire daily ~6am IST).
     """
-    if not settings.kite_access_token:
+    token = _resolve_access_token()
+    if not token:
         raise RuntimeError(
-            "KITE_ACCESS_TOKEN is empty. Tokens expire daily ~6am IST — "
-            "run `python -m scripts.kite_login` and update .env."
+            "No Kite access token. Tokens expire daily ~6am IST — log in "
+            "via the frontend Settings page, or run "
+            "`python -m scripts.kite_login` and update .env."
         )
     kite = _create_kite()
-    kite.set_access_token(settings.kite_access_token)
+    kite.set_access_token(token)
     try:
         yield kite
     finally:
