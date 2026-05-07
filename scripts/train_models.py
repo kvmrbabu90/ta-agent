@@ -58,6 +58,13 @@ _NON_FEATURE_COLS = {
 @click.option("--tune", is_flag=True, help="Run Optuna search.")
 @click.option("--n-trials", default=50, show_default=True, type=int)
 @click.option(
+    "--tune-timeout-seconds",
+    default=3600,
+    show_default=True,
+    type=int,
+    help="Wall-clock cap for the Optuna study. Use 0 to disable (only n_trials limits).",
+)
+@click.option(
     "--final-train-end",
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=None,
@@ -90,6 +97,7 @@ def main(
     min_train_days: int,
     tune: bool,
     n_trials: int,
+    tune_timeout_seconds: int,
     final_train_end: datetime | None,
     early_stopping_holdout_days: int,
     calibration_holdout_days: int,
@@ -123,7 +131,11 @@ def main(
     final_cfg = base_cfg
     final_cv = baseline
     if tune:
-        log.info(f"running Optuna with n_trials={n_trials}")
+        timeout = None if tune_timeout_seconds <= 0 else tune_timeout_seconds
+        log.info(
+            f"running Optuna with n_trials={n_trials} "
+            f"timeout={'unlimited' if timeout is None else f'{timeout}s'}"
+        )
         final_cfg, study = tune_hyperparameters(
             df,
             feature_cols,
@@ -131,6 +143,7 @@ def main(
             splitter,
             base_cfg,
             n_trials=n_trials,
+            timeout_seconds=timeout,
             study_name=f"{universe}_{target}",
         )
         log.info(f"best params: {study.best_params}")
