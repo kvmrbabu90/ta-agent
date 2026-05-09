@@ -86,27 +86,29 @@ def _load_universe_ohlcv(
     *,
     duckdb_path: str | None = None,
 ) -> pd.DataFrame:
-    """OHLCV for every symbol that was a member of ``universe`` at any point in [start, end]."""
+    """OHLCV for every symbol that was a member of ``universe`` at any point in [start, end].
+
+    Pulls (symbol, exchange) pairs from membership and filters bars by both.
+    Symbol-only fetch causes cross-exchange collisions (e.g. HAL = Halliburton
+    on NYSE and Hindustan Aeronautics on NSE), which corrupts forward returns.
+    """
     with get_conn(duckdb_path) as conn:
-        symbols = [
-            r[0]
-            for r in conn.execute(
-                """
-                SELECT DISTINCT symbol
-                FROM index_membership
-                WHERE universe = ?
-                  AND start_date <= ?
-                  AND (end_date IS NULL OR end_date >= ?)
-                """,
-                [universe, end, start],
-            ).fetchall()
-        ]
-    if not symbols:
+        sym_exch_pairs = conn.execute(
+            """
+            SELECT DISTINCT symbol, exchange
+            FROM index_membership
+            WHERE universe = ?
+              AND start_date <= ?
+              AND (end_date IS NULL OR end_date >= ?)
+            """,
+            [universe, end, start],
+        ).fetchall()
+    if not sym_exch_pairs:
         return pd.DataFrame(columns=["symbol", "bar_date", "close"])
 
     rows: list[pd.DataFrame] = []
-    for sym in symbols:
-        bars = get_ohlcv(sym, start=start, end=end)
+    for sym, exch in sym_exch_pairs:
+        bars = get_ohlcv(sym, start=start, end=end, exchange=exch)
         if not bars.empty:
             rows.append(bars[["symbol", "bar_date", "close"]])
     if not rows:

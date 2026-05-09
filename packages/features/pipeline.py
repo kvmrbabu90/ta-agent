@@ -78,12 +78,18 @@ def _resolve_per_symbol_groups(duckdb_path: str | None) -> list[FeatureGroup]:
 
 def _all_symbols_in_window(
     universe: str, start: date, end: date, *, duckdb_path: str | None = None
-) -> list[str]:
-    """All symbols that were members of ``universe`` at any point in [start, end]."""
+) -> list[tuple[str, str]]:
+    """(symbol, exchange) pairs that were members of ``universe`` at any point in [start, end].
+
+    Returning the exchange is non-negotiable: passing it to ``get_ohlcv``
+    prevents cross-exchange ticker collisions (e.g. HAL = Halliburton on NYSE
+    and Hindustan Aeronautics on NSE) from polluting per-symbol feature
+    windows.
+    """
     with get_conn(duckdb_path) as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT symbol
+            SELECT DISTINCT symbol, exchange
             FROM index_membership
             WHERE universe = ?
               AND start_date <= ?
@@ -92,7 +98,7 @@ def _all_symbols_in_window(
             """,
             [universe, end, start],
         ).fetchall()
-    return [r[0] for r in rows]
+    return [(r[0], r[1]) for r in rows]
 
 
 def _membership_intervals(
@@ -164,21 +170,21 @@ def build_feature_matrix(
     Returns columns: symbol, bar_date, plus ~50 feature columns named like
     ``price__log_return_5d``, ``trend__macd_histogram``, ``cross_sectional__xs_rank_rsi_14``.
     """
-    symbols = _all_symbols_in_window(universe, start, end, duckdb_path=duckdb_path)
-    if not symbols:
+    sym_exch_pairs = _all_symbols_in_window(universe, start, end, duckdb_path=duckdb_path)
+    if not sym_exch_pairs:
         log.warning(f"build_feature_matrix: no symbols for {universe} in [{start}..{end}]")
         return pd.DataFrame()
 
     log.info(
         f"build_feature_matrix: {universe} [{start}..{end}] "
-        f"({len(symbols)} symbols)"
+        f"({len(sym_exch_pairs)} symbols)"
     )
 
     per_symbol_groups = _resolve_per_symbol_groups(duckdb_path)
 
     rows: list[pd.DataFrame] = []
-    for sym in symbols:
-        ohlcv = get_ohlcv(sym, start=start, end=end)
+    for sym, exch in sym_exch_pairs:
+        ohlcv = get_ohlcv(sym, start=start, end=end, exchange=exch)
         if ohlcv.empty:
             continue
         feat = _per_symbol_features(sym, ohlcv, per_symbol_groups)

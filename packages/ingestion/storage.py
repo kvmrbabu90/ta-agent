@@ -195,10 +195,17 @@ def get_ohlcv(
     start: str | pd.Timestamp | None = None,
     end: str | pd.Timestamp | None = None,
     source: str | None = None,
+    exchange: str | None = None,
     conn: duckdb.DuckDBPyConnection | None = None,
 ) -> pd.DataFrame:
     """Fetch OHLCV bars. If multiple sources exist for the same bar, the most
-    recently ingested wins (handled at the query level)."""
+    recently ingested wins (handled at the query level).
+
+    ``exchange`` filter is critical when symbols collide across markets — e.g.
+    HAL is both Halliburton (NYSE) and Hindustan Aeronautics Ltd (NSE). Callers
+    iterating per-symbol from a universe membership table must pass the
+    membership row's exchange to avoid silently mixing two unrelated tickers.
+    """
     symbols = [symbol] if isinstance(symbol, str) else list(symbol)
 
     own_conn = conn is None
@@ -225,6 +232,9 @@ def get_ohlcv(
         if source is not None:
             sql += " AND source = ?"
             params.append(source)
+        if exchange is not None:
+            sql += " AND exchange = ?"
+            params.append(exchange)
         sql += """
             )
             SELECT symbol, exchange, bar_date, open, high, low, close,
