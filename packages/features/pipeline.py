@@ -20,8 +20,18 @@ from datetime import date
 
 import pandas as pd
 
-# Import macro to trigger its extension registration as a side effect.
+# Import macro + earnings to trigger their extension registration.
+# packages.features.interactions is intentionally NOT imported here:
+# cross-seed validation showed +122% rank-IC on seed 42 but -156% on
+# seed 44, and +earnings+interactions combined was destructively negative
+# (-139% rank-IC seed 42). Code is preserved at packages/features/interactions.py
+# for potential future use with deeper trees or different feature_fraction.
+# To re-enable, uncomment the line below — it self-imports macro to enforce
+# the correct registration order (macro must register before interactions).
+import packages.features.earnings  # noqa: F401
 import packages.features.macro  # noqa: F401
+
+# import packages.features.interactions  # noqa: F401  # disabled, see comment above
 from packages.common.logging import log
 from packages.features.base import FeatureGroup, PanelFeatureGroup
 from packages.features.cross_sectional import CrossSectionalFeatures
