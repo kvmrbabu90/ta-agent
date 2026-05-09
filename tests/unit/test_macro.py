@@ -123,7 +123,10 @@ def test_macro_features_broadcast_per_date(tmp_path: Path, monkeypatch: pytest.M
 
     out = MacroFeatures(duckdb_path=db).compute(panel)
     cols = [c for c in out.columns if c.startswith("macro__")]
-    assert len(cols) == 3
+    # v1 (vix, usd_inr) + Step-4 (treasuries, credit spread, dxy, gold/copper)
+    # = 10 columns total. Test only seeds vix + usd_inr, so the others come back
+    # all-NaN — but the columns themselves still appear.
+    assert len(cols) == 10
     # Within each bar_date, the macro values must be identical across symbols.
     for c in cols:
         per_date_std = out.groupby("bar_date")[c].std().dropna()
@@ -200,9 +203,16 @@ def test_pipeline_includes_macro_when_data_present(
     )
     macro_cols = [c for c in panel.columns if c.startswith("macro__")]
     assert sorted(macro_cols) == [
+        "macro__credit_spread_chg_5d",
+        "macro__credit_spread_z_252",
+        "macro__dxy_chg_5d",
         "macro__fx_ret_5d",
+        "macro__gold_copper_ratio_z_252",
+        "macro__treasury_10y_chg_5d",
+        "macro__treasury_10y_z_252",
         "macro__vix_chg_5d",
         "macro__vix_level_z_252",
+        "macro__yield_curve_slope_z_252",
     ]
 
 

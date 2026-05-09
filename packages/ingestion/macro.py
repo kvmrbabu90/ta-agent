@@ -47,6 +47,14 @@ _SOURCE = "yfinance"
 SERIES_TICKERS: dict[str, str] = {
     "vix": "^VIX",
     "usd_inr": "INR=X",
+    # Step 4 macro/cross-asset additions (regime indicators).
+    "treasury_10y": "^TNX",       # 10-year US Treasury yield (in % * 10 — yfinance quirk)
+    "treasury_2y": "^FVX",        # 5-year proxy (^TYX = 30y, no clean 2y on yfinance)
+    "hyg": "HYG",                 # High-yield corporate ETF (price)
+    "lqd": "LQD",                 # Investment-grade corporate ETF (price)
+    "dxy": "DX-Y.NYB",            # US Dollar Index
+    "gold": "GLD",                # Gold ETF (price)
+    "copper": "HG=F",             # Copper futures front-month
 }
 
 

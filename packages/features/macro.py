@@ -4,11 +4,31 @@ Reads from the ``macro_daily`` table. If no macro data is present, the
 feature group should not be registered (see pipeline conditional logic);
 when it is registered with empty data, all features come back NaN.
 
-Features:
+Features (v1):
     macro__vix_level_z_252  — z-score of VIX close vs. trailing 252-day window
                               (excluding today, so causal)
     macro__vix_chg_5d       — 5-day change in VIX (absolute, not %)
     macro__fx_ret_5d        — 5-day log return of USD/INR
+
+Step-4 additions (regime / cross-asset):
+    macro__treasury_10y_z_252        — z-score of 10y yield
+    macro__treasury_10y_chg_5d       — 5-day change in 10y yield
+    macro__yield_curve_slope_z_252   — z-score of (10y - 5y) yield spread
+    macro__credit_spread_z_252       — z-score of LQD/HYG ratio (proxy for credit spread:
+                                       higher = wider spread = risk-off)
+    macro__credit_spread_chg_5d      — 5-day change in LQD/HYG ratio
+    macro__dxy_chg_5d                — 5-day log return of US Dollar Index
+    macro__gold_copper_ratio_z_252   — z-score of gold/copper ratio (deflation/risk-off proxy)
+
+Each is computed once per date and broadcast to every (symbol, date) row.
+
+NOTE: a controlled CV after Step-4 added these 7 features showed a -38%
+rank-IC regression (seed 42) and -74% on seed 43. Universe-constant features
+have zero per-day cross-sectional discrimination; the only way they help is
+via interactions with per-symbol features, which our current LightGBM
+hyperparams don't reliably learn. The features are still computed (they're
+cheap and may help a future regime-conditional model), but their net effect
+on flat training is negative. Step 5 is exploring the regime-gating path.
 """
 
 from __future__ import annotations
@@ -50,15 +70,28 @@ class MacroFeatures(PanelFeatureGroup):
         start = bar_dates.min() - pd.Timedelta(days=400)
         end = bar_dates.max()
 
-        vix = load_macro_series("vix", start, end, duckdb_path=self._duckdb_path)
-        fx = load_macro_series("usd_inr", start, end, duckdb_path=self._duckdb_path)
+        # Load all series; missing series come back as empty Series.
+        load = lambda name: load_macro_series(name, start, end, duckdb_path=self._duckdb_path)  # noqa: E731
+        vix = load("vix")
+        fx = load("usd_inr")
+        t10 = load("treasury_10y")
+        t5 = load("treasury_2y")  # 5-year proxy (see macro.SERIES_TICKERS)
+        hyg = load("hyg")
+        lqd = load("lqd")
+        dxy = load("dxy")
+        gold = load("gold")
+        copper = load("copper")
 
-        # Build a per-date macro frame indexed by datetime.
-        idx = pd.DatetimeIndex(sorted(set(vix.index) | set(fx.index)))
+        # Union of all dates we have any macro on.
+        all_idx = sorted(set().union(*(s.index for s in [vix, fx, t10, t5, hyg, lqd, dxy, gold, copper])))
+        idx = pd.DatetimeIndex(all_idx)
         macro = pd.DataFrame(index=idx)
+
+        # v1 features
         if not vix.empty:
-            macro["vix_level_z_252"] = _trailing_zscore(vix.reindex(idx).ffill(), 252).values
-            macro["vix_chg_5d"] = vix.reindex(idx).ffill().diff(5).values
+            v = vix.reindex(idx).ffill()
+            macro["vix_level_z_252"] = _trailing_zscore(v, 252).values
+            macro["vix_chg_5d"] = v.diff(5).values
         else:
             macro["vix_level_z_252"] = np.nan
             macro["vix_chg_5d"] = np.nan
@@ -67,6 +100,47 @@ class MacroFeatures(PanelFeatureGroup):
             macro["fx_ret_5d"] = log_fx.diff(5).values
         else:
             macro["fx_ret_5d"] = np.nan
+
+        # Step-4 additions
+        if not t10.empty:
+            t = t10.reindex(idx).ffill()
+            macro["treasury_10y_z_252"] = _trailing_zscore(t, 252).values
+            macro["treasury_10y_chg_5d"] = t.diff(5).values
+        else:
+            macro["treasury_10y_z_252"] = np.nan
+            macro["treasury_10y_chg_5d"] = np.nan
+
+        if not t10.empty and not t5.empty:
+            slope = t10.reindex(idx).ffill() - t5.reindex(idx).ffill()
+            macro["yield_curve_slope_z_252"] = _trailing_zscore(slope, 252).values
+        else:
+            macro["yield_curve_slope_z_252"] = np.nan
+
+        if not hyg.empty and not lqd.empty:
+            # Higher LQD/HYG ratio = HYG underperforming LQD = wider credit
+            # spreads = risk-off. Forward-fill within asset before ratio.
+            hyg_f = hyg.reindex(idx).ffill().where(lambda s: s > 0)
+            lqd_f = lqd.reindex(idx).ffill().where(lambda s: s > 0)
+            credit = lqd_f / hyg_f
+            macro["credit_spread_z_252"] = _trailing_zscore(credit, 252).values
+            macro["credit_spread_chg_5d"] = credit.diff(5).values
+        else:
+            macro["credit_spread_z_252"] = np.nan
+            macro["credit_spread_chg_5d"] = np.nan
+
+        if not dxy.empty:
+            log_dxy = np.log(dxy.reindex(idx).ffill().where(lambda s: s > 0))
+            macro["dxy_chg_5d"] = log_dxy.diff(5).values
+        else:
+            macro["dxy_chg_5d"] = np.nan
+
+        if not gold.empty and not copper.empty:
+            gold_f = gold.reindex(idx).ffill().where(lambda s: s > 0)
+            copper_f = copper.reindex(idx).ffill().where(lambda s: s > 0)
+            ratio = gold_f / copper_f
+            macro["gold_copper_ratio_z_252"] = _trailing_zscore(ratio, 252).values
+        else:
+            macro["gold_copper_ratio_z_252"] = np.nan
 
         macro = macro.reset_index().rename(columns={"index": "bar_date"})
         # Forward-fill macro values across stock-holiday gaps before merge.
@@ -80,10 +154,15 @@ class MacroFeatures(PanelFeatureGroup):
 
         merged = out_join.merge(macro, on="bar_date", how="left")
         merged["bar_date"] = out["bar_date"].values  # restore original dtype
-        rename = {
-            c: f"{self.name}__{c}"
-            for c in ("vix_level_z_252", "vix_chg_5d", "fx_ret_5d")
-        }
+        feature_cols = (
+            "vix_level_z_252", "vix_chg_5d", "fx_ret_5d",
+            "treasury_10y_z_252", "treasury_10y_chg_5d",
+            "yield_curve_slope_z_252",
+            "credit_spread_z_252", "credit_spread_chg_5d",
+            "dxy_chg_5d",
+            "gold_copper_ratio_z_252",
+        )
+        rename = {c: f"{self.name}__{c}" for c in feature_cols}
         return merged.rename(columns=rename)
 
 
