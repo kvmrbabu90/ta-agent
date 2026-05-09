@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     kite_api_secret: str = ""
     kite_access_token: str = ""
 
+    # Finnhub (earnings dates / surprises)
+    finnhub_api_key: str = ""
+
     # Storage
     duckdb_path: str = str(PROCESSED_DIR / "market.duckdb")
     predictions_sqlite_path: str = str(PROCESSED_DIR / "predictions.sqlite")
