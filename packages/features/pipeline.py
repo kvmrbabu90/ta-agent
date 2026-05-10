@@ -31,7 +31,18 @@ import pandas as pd
 import packages.features.earnings  # noqa: F401
 import packages.features.macro  # noqa: F401
 
-# import packages.features.interactions  # noqa: F401  # disabled, see comment above
+# Disabled — Phase A3 controlled CV (3 seeds) showed +sector_residual lifts
+# rank-IC by ~+180% on average BUT regresses decile spread by -120%
+# (sign-flips it from positive to negative). Decile spread is the metric
+# that maps to long-short P&L, so the gate fails. Code preserved at
+# packages/features/sector_residual.py for potential future revival with
+# different residualization (e.g. 60d rolling beta, not just sector ETF
+# subtraction).
+# import packages.features.sector_residual  # noqa: F401
+
+# Disabled — Phase 5 (interactions) cross-seed validation was too volatile
+# (+122% seed 42, -156% seed 44). Code preserved.
+# import packages.features.interactions  # noqa: F401
 from packages.common.logging import log
 from packages.features.base import FeatureGroup, PanelFeatureGroup
 from packages.features.cross_sectional import CrossSectionalFeatures
