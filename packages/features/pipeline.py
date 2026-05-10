@@ -29,7 +29,6 @@ import pandas as pd
 # To re-enable, uncomment the line below — it self-imports macro to enforce
 # the correct registration order (macro must register before interactions).
 import packages.features.earnings  # noqa: F401
-import packages.features.macro  # noqa: F401
 
 # Disabled — Phase A3 controlled CV (3 seeds) showed +sector_residual lifts
 # rank-IC by ~+180% on average BUT regresses decile spread by -120%
@@ -39,10 +38,22 @@ import packages.features.macro  # noqa: F401
 # different residualization (e.g. 60d rolling beta, not just sector ETF
 # subtraction).
 # import packages.features.sector_residual  # noqa: F401
+import packages.features.macro  # noqa: F401
 
-# Disabled — Phase 5 (interactions) cross-seed validation was too volatile
-# (+122% seed 42, -156% seed 44). Code preserved.
-# import packages.features.interactions  # noqa: F401
+# Phase B retest result (3-seed cross-CV on the +A2 panel):
+#   +interactions mean rank-IC delta = -0.00892 (-81%)
+#   worst per-seed delta = -0.00919, decile spread sign-flipped
+# The +A2 panel didn't stabilize interactions as hoped. Disabling again.
+# Code preserved at packages/features/interactions.py.
+# import packages.features.interactions  # noqa: F401  # Phase B - REJECTED
+# Phase C result (3-seed cross-CV on the +A2 panel):
+#   +sec_events mean rank-IC delta = -0.00629 (-57%)
+#   worst per-seed delta = -0.00838
+# The 6 SEC 8-K event features dilute the per-symbol signal under
+# LightGBM's feature_fraction sampling. SEC infrastructure (561k filings
+# in DuckDB, full adapter, 9 unit tests) is preserved for future use —
+# may help once the model has more cross-sectional discrimination headroom.
+# import packages.features.sec_events  # noqa: F401  # Phase C - REJECTED
 from packages.common.logging import log
 from packages.features.base import FeatureGroup, PanelFeatureGroup
 from packages.features.cross_sectional import CrossSectionalFeatures
