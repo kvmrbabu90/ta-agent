@@ -61,7 +61,12 @@ class TuneConstraints:
     """
 
     # Reject trials where any retained fold has best_iter < this value.
-    min_best_iter: int = 5
+    # Calibrated low (was 5 originally): the prior production hp itself
+    # produces best_iter pattern [1, 1, 18, 15, 4] across folds. Setting
+    # min_best_iter=5 rejected normal training. min_best_iter=2 catches
+    # the truly degenerate "every fold stops at iter 1" case while allowing
+    # healthy walk-forward CV behavior.
+    min_best_iter: int = 2
 
     # Drop folds with train_size below this from the mean calculation.
     # Set to 0 to disable.
