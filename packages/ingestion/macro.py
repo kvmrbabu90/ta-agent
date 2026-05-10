@@ -55,6 +55,11 @@ SERIES_TICKERS: dict[str, str] = {
     "dxy": "DX-Y.NYB",            # US Dollar Index
     "gold": "GLD",                # Gold ETF (price)
     "copper": "HG=F",             # Copper futures front-month
+    # Phase A2: VIX term-structure additions
+    "vix9d": "^VIX9D",            # 9-day VIX (short-end of vol curve)
+    "vix3m": "^VIX3M",            # 3-month VIX (long-end of vol curve)
+    "vvix": "^VVIX",              # vol-of-vol (uncertainty about vol itself)
+    "skew": "^SKEW",              # CBOE Skew Index (tail-risk pricing in S&P options)
 }
 
 

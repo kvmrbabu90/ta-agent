@@ -81,9 +81,17 @@ class MacroFeatures(PanelFeatureGroup):
         dxy = load("dxy")
         gold = load("gold")
         copper = load("copper")
+        # Phase A2: VIX term structure
+        vix9d = load("vix9d")
+        vix3m = load("vix3m")
+        vvix = load("vvix")
+        skew = load("skew")
 
         # Union of all dates we have any macro on.
-        all_idx = sorted(set().union(*(s.index for s in [vix, fx, t10, t5, hyg, lqd, dxy, gold, copper])))
+        all_idx = sorted(set().union(*(s.index for s in [
+            vix, fx, t10, t5, hyg, lqd, dxy, gold, copper,
+            vix9d, vix3m, vvix, skew,
+        ])))
         idx = pd.DatetimeIndex(all_idx)
         macro = pd.DataFrame(index=idx)
 
@@ -142,6 +150,40 @@ class MacroFeatures(PanelFeatureGroup):
         else:
             macro["gold_copper_ratio_z_252"] = np.nan
 
+        # Phase A2: VIX term-structure features
+        # vix9d/vix ratio < 1 typically = stress is concentrated in near-term;
+        # vix9d/vix > 1 = unusual short-end stress (event risk)
+        if not vix9d.empty and not vix.empty:
+            v9 = vix9d.reindex(idx).ffill()
+            v30 = vix.reindex(idx).ffill().where(lambda s: s > 0)
+            macro["vix9d_to_vix_ratio"] = (v9 / v30).values
+        else:
+            macro["vix9d_to_vix_ratio"] = np.nan
+
+        # vix/vix3m: < 1 = contango (calm regime); > 1 = backwardation (stress regime)
+        if not vix.empty and not vix3m.empty:
+            v30 = vix.reindex(idx).ffill()
+            v3m = vix3m.reindex(idx).ffill().where(lambda s: s > 0)
+            macro["vix_to_vix3m_ratio"] = (v30 / v3m).values
+        else:
+            macro["vix_to_vix3m_ratio"] = np.nan
+
+        # VVIX z-score: vol-of-vol level vs trailing 252d
+        if not vvix.empty:
+            vv = vvix.reindex(idx).ffill()
+            macro["vvix_z_252"] = _trailing_zscore(vv, 252).values
+        else:
+            macro["vvix_z_252"] = np.nan
+
+        # SKEW level (raw — typically 100-150) and 5-day change
+        if not skew.empty:
+            sk = skew.reindex(idx).ffill()
+            macro["skew_level"] = sk.values
+            macro["skew_chg_5d"] = sk.diff(5).values
+        else:
+            macro["skew_level"] = np.nan
+            macro["skew_chg_5d"] = np.nan
+
         macro = macro.reset_index().rename(columns={"index": "bar_date"})
         # Forward-fill macro values across stock-holiday gaps before merge.
         macro = macro.sort_values("bar_date").ffill()
@@ -161,6 +203,9 @@ class MacroFeatures(PanelFeatureGroup):
             "credit_spread_z_252", "credit_spread_chg_5d",
             "dxy_chg_5d",
             "gold_copper_ratio_z_252",
+            # Phase A2: VIX term structure
+            "vix9d_to_vix_ratio", "vix_to_vix3m_ratio", "vvix_z_252",
+            "skew_level", "skew_chg_5d",
         )
         rename = {c: f"{self.name}__{c}" for c in feature_cols}
         return merged.rename(columns=rename)
