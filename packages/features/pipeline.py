@@ -40,6 +40,19 @@ import packages.features.earnings  # noqa: F401
 # import packages.features.sector_residual  # noqa: F401
 import packages.features.macro  # noqa: F401
 
+# Phase D result (3-seed cross-CV on the +A2 panel):
+#   +sec_fundamentals mean rank-IC delta = -0.00145 (-13%)
+#   per-seed: 42:+0.03536  43:-0.01313  44:+0.00653  → severe seed-43 regression
+#   mean decile spread delta = -0.00197 (-70%)
+# Same lucky-seed pattern we've seen across attempts: seed 42 looks
+# unicorn-strong but the result doesn't reproduce on other seeds.
+# Likely root causes: (1) raw FY values are highly persistent across daily
+# bar_dates (LightGBM treats them as ~static); (2) 33-67% NaN rates from
+# limited filing history; (3) we don't yet build CROSS-SECTIONAL RANKS of
+# the fundamentals (the form they actually work in equity quant). Code +
+# adapter + 222k FY/Q rows in DuckDB are preserved at packages.ingestion
+# .sec_fundamentals — the next try should rank within-date, not raw values.
+# import packages.features.sec_fundamentals  # noqa: F401  # Phase D - REJECTED
 # Phase B retest result (3-seed cross-CV on the +A2 panel):
 #   +interactions mean rank-IC delta = -0.00892 (-81%)
 #   worst per-seed delta = -0.00919, decile spread sign-flipped
