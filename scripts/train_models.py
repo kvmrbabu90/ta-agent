@@ -31,7 +31,7 @@ from packages.modeling.train import (
     train_final_model,
     train_with_cv,
 )
-from packages.modeling.tune import tune_hyperparameters
+from packages.modeling.tune import TuneConstraints, tune_hyperparameters
 
 _NON_FEATURE_COLS = {
     "symbol", "bar_date", "in_universe", "fwd_return_5d", "fwd_quintile_5d",
@@ -63,6 +63,16 @@ _NON_FEATURE_COLS = {
     show_default=True,
     type=int,
     help="Wall-clock cap for the Optuna study. Use 0 to disable (only n_trials limits).",
+)
+@click.option(
+    "--tune-constrain/--no-tune-constrain",
+    default=True,
+    show_default=True,
+    help=(
+        "Apply Phase-A1 trial constraints during Optuna search: "
+        "min_best_iter=50, min_fold_train_size=200000, max_fold_dominance_z=2.5. "
+        "Rejects degenerate hyperparams that overfit one small fold."
+    ),
 )
 @click.option(
     "--final-train-end",
@@ -98,6 +108,7 @@ def main(
     tune: bool,
     n_trials: int,
     tune_timeout_seconds: int,
+    tune_constrain: bool,
     final_train_end: datetime | None,
     early_stopping_holdout_days: int,
     calibration_holdout_days: int,
@@ -132,9 +143,11 @@ def main(
     final_cv = baseline
     if tune:
         timeout = None if tune_timeout_seconds <= 0 else tune_timeout_seconds
+        constraints = TuneConstraints() if tune_constrain else None
         log.info(
             f"running Optuna with n_trials={n_trials} "
-            f"timeout={'unlimited' if timeout is None else f'{timeout}s'}"
+            f"timeout={'unlimited' if timeout is None else f'{timeout}s'} "
+            f"constraints={'on' if constraints else 'off'}"
         )
         final_cfg, study = tune_hyperparameters(
             df,
@@ -145,6 +158,7 @@ def main(
             n_trials=n_trials,
             timeout_seconds=timeout,
             study_name=f"{universe}_{target}",
+            constraints=constraints,
         )
         log.info(f"best params: {study.best_params}")
         final_cv = train_with_cv(df, feature_cols, label_col, splitter, final_cfg)
