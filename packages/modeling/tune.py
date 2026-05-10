@@ -143,6 +143,7 @@ def tune_hyperparameters(
     study_name: str = "ta_agent",
     storage_path: str | None = None,
     constraints: TuneConstraints | None = None,
+    seeds: tuple[int, ...] | None = None,
 ) -> tuple[TrainConfig, optuna.Study]:
     """Run Optuna search; return (best_config, study).
 
@@ -150,7 +151,21 @@ def tune_hyperparameters(
     of ``TuneConstraints`` to enforce min_best_iter, min_fold_train_size,
     and max_fold_dominance_z. Pass ``None`` for the legacy unconstrained
     objective (used by older tests).
+
+    ``seeds`` (Phase E): when provided, each trial trains the model under
+    EVERY seed in the tuple and the objective is the MEAN across seeds.
+    This breaks the lucky-seed pathology where a single-seed objective
+    optimized hyperparams that worked great for seed 42 and collapsed on
+    seeds 43+44. Each multi-seed trial is N× slower than single-seed.
+    Pass ``None`` (default) for the legacy single-seed behavior.
     """
+
+    def _run_one_trial(cfg: TrainConfig) -> dict:
+        try:
+            return train_with_cv(df, feature_cols, label_col, splitter, cfg)
+        except Exception as exc:  # noqa: BLE001 — Optuna trial failure should not abort study
+            log.warning(f"trial cfg failed: {exc!r}")
+            return {"fold_metrics": [], "mean_metrics": {}}
 
     def _objective(trial: optuna.Trial) -> float:
         cfg = replace(
@@ -163,12 +178,28 @@ def tune_hyperparameters(
             lambda_l1=trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
             lambda_l2=trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
         )
-        try:
-            cv = train_with_cv(df, feature_cols, label_col, splitter, cfg)
-        except Exception as exc:  # noqa: BLE001 — Optuna trial failure should not abort study
-            log.warning(f"trial {trial.number} failed: {exc!r}")
-            return float("-inf")
-        return _objective_metric(cv, base_config.objective, constraints)
+
+        if seeds is None:
+            cv = _run_one_trial(cfg)
+            return _objective_metric(cv, base_config.objective, constraints)
+
+        # Multi-seed: average objective across seeds. If ANY seed produces
+        # -inf (constraint violation), the whole trial is rejected.
+        per_seed_objective: list[float] = []
+        for s in seeds:
+            seed_cfg = replace(cfg, seed=s)
+            cv = _run_one_trial(seed_cfg)
+            obj = _objective_metric(cv, base_config.objective, constraints)
+            if not np.isfinite(obj):
+                # Single-seed constraint violation is enough to reject the trial.
+                return float("-inf")
+            per_seed_objective.append(obj)
+
+        mean_obj = float(np.mean(per_seed_objective))
+        # Stash per-seed values in the trial's user_attrs for inspection.
+        trial.set_user_attr("per_seed_objectives", per_seed_objective)
+        trial.set_user_attr("min_seed_objective", float(min(per_seed_objective)))
+        return mean_obj
 
     sampler = optuna.samplers.TPESampler(seed=base_config.seed)
     storage = f"sqlite:///{storage_path}" if storage_path else None

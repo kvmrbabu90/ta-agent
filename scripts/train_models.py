@@ -75,6 +75,16 @@ _NON_FEATURE_COLS = {
     ),
 )
 @click.option(
+    "--tune-seeds",
+    default="",
+    show_default=True,
+    help=(
+        "Phase-E multi-seed tuning: comma-separated list of seeds (e.g. "
+        "'42,43,44'). Each Optuna trial trains under all seeds and the "
+        "objective is the MEAN across seeds. Empty = legacy single-seed."
+    ),
+)
+@click.option(
     "--final-train-end",
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=None,
@@ -109,6 +119,7 @@ def main(
     n_trials: int,
     tune_timeout_seconds: int,
     tune_constrain: bool,
+    tune_seeds: str,
     final_train_end: datetime | None,
     early_stopping_holdout_days: int,
     calibration_holdout_days: int,
@@ -144,10 +155,15 @@ def main(
     if tune:
         timeout = None if tune_timeout_seconds <= 0 else tune_timeout_seconds
         constraints = TuneConstraints() if tune_constrain else None
+        seeds_tuple = (
+            tuple(int(s.strip()) for s in tune_seeds.split(",") if s.strip())
+            or None
+        ) if tune_seeds else None
         log.info(
             f"running Optuna with n_trials={n_trials} "
             f"timeout={'unlimited' if timeout is None else f'{timeout}s'} "
-            f"constraints={'on' if constraints else 'off'}"
+            f"constraints={'on' if constraints else 'off'} "
+            f"seeds={seeds_tuple if seeds_tuple else '[single]'}"
         )
         final_cfg, study = tune_hyperparameters(
             df,
@@ -159,6 +175,7 @@ def main(
             timeout_seconds=timeout,
             study_name=f"{universe}_{target}",
             constraints=constraints,
+            seeds=seeds_tuple,
         )
         log.info(f"best params: {study.best_params}")
         final_cv = train_with_cv(df, feature_cols, label_col, splitter, final_cfg)
