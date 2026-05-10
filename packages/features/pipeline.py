@@ -40,6 +40,19 @@ import packages.features.earnings  # noqa: F401
 # import packages.features.sector_residual  # noqa: F401
 import packages.features.macro  # noqa: F401
 
+# Phase D2 result (3-seed cross-CV on the +A2 panel):
+#   +sec_fundamentals_v2 mean rank-IC delta = -0.00434 (-39%)
+#   per-seed: 42:+0.00497  43:+0.00166  44:+0.01345  → worst-seed -0.01173
+#   decile spread lift = -0.00218 (sign-flipped negative)
+# Even with TTM aggregation (4× refresh rate vs annual) AND cross-sectional
+# ranks (the form fundamentals actually work in equity quant), no robust
+# lift on this dataset. Same conclusion as Phase D: fundamentals (as
+# extracted from raw GAAP without market cap) don't add stable signal here.
+# Code + 222k DuckDB rows are still preserved; the next try should add
+# market-cap-aware ratios (P/E, P/B, FCF yield) and quality factors built
+# on quarter-over-quarter changes (revenue_growth_yoy, eps_growth_yoy).
+# import packages.features.sec_fundamentals_v2  # noqa: F401  # Phase D2 - REJECTED
+
 # Phase D result (3-seed cross-CV on the +A2 panel):
 #   +sec_fundamentals mean rank-IC delta = -0.00145 (-13%)
 #   per-seed: 42:+0.03536  43:-0.01313  44:+0.00653  → severe seed-43 regression
