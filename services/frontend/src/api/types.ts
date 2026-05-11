@@ -75,6 +75,14 @@ export interface ICPoint {
   n_stocks: number;
 }
 
+export interface StrategyEquityPoint {
+  bar_date: string;
+  strategy_return: number;
+  spy_return: number | null;
+  cum_strategy_return: number;
+  cum_spy_return: number | null;
+}
+
 export interface PerformanceResponse {
   universe: string;
   lookback_days: number;
@@ -86,8 +94,75 @@ export interface PerformanceResponse {
   mean_daily_rank_ic: number | null;
   hit_rate: number | null;
   decile_spread_5d: number | null;
+  directional_accuracy: number | null;
+  n_directional_observations: number | null;
+  sharpe_ratio: number | null;
+  sortino_ratio: number | null;
+  spy_sharpe_ratio: number | null;
+  spy_sortino_ratio: number | null;
+  equity_curve: StrategyEquityPoint[];
   calibration: CalibrationBucket[];
   ic_timeseries: ICPoint[];
+}
+
+// --- Paper trading -----------------------------------------------------------
+
+export interface PaperRunSummary {
+  run_id: string;
+  universe: string;
+  starting_cash: number;
+  position_size: number;
+  n_long: number;
+  n_short: number;
+  short_threshold: number;
+  started_at: string;
+  first_trade_date: string | null;
+  last_trade_date: string | null;
+  final_equity: number | null;
+  final_realized_pnl: number | null;
+  notes: string | null;
+}
+
+export interface PaperEquityPoint {
+  trade_date: string;
+  snapshot_kind: 'open_8am_ct' | 'close_5pm_ct';
+  equity: number;
+  cash: number;
+  long_mv: number;
+  short_mv: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+}
+
+export interface PaperPosition {
+  symbol: string;
+  side: 'long' | 'short';
+  qty: number;
+  entry_price: number;
+  entry_date: string;
+  last_price: number | null;
+  unrealized_pnl: number;
+}
+
+export interface PaperTrade {
+  trade_date: string;
+  symbol: string;
+  side: 'long_open' | 'long_close' | 'short_open' | 'short_close';
+  qty: number;
+  fill_price: number;
+  cash_delta: number;
+  realized_pnl: number | null;
+}
+
+export interface PaperSnapshotResponse {
+  run: PaperRunSummary;
+  equity_curve: PaperEquityPoint[];
+  positions: PaperPosition[];
+}
+
+export interface PaperTradesResponse {
+  run_id: string;
+  trades: PaperTrade[];
 }
 
 export interface FeatureContribution {

@@ -1,61 +1,57 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarDays } from 'lucide-react';
+import { CalendarDays, TrendingDown, TrendingUp } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useUniverses } from '@/hooks/useUniverses';
 import { useTopPicks } from '@/hooks/useTopPicks';
-import type { Direction, TopPick } from '@/api/types';
+import { useStockOhlcv } from '@/hooks/useStockOhlcv';
+import type { TopPick } from '@/api/types';
 import { UniverseSelector } from '@/components/UniverseSelector';
-import { DirectionToggle } from '@/components/DirectionToggle';
-import { PicksTable } from '@/components/PicksTable';
+import { Sparkline } from '@/components/Sparkline';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
 
-const HIGH_CONF_THRESHOLD = 0.5;
+const PICKS_PER_SIDE = 10;
 
-function pickHighConfidence(picks: TopPick[], direction: Direction): TopPick[] {
-  const field: keyof TopPick =
-    direction === 'long' ? 'top_quintile_proba' : 'bottom_quintile_proba';
-  return picks
-    .filter((p) => {
-      const v = p[field];
-      return typeof v === 'number' && v > HIGH_CONF_THRESHOLD;
-    })
-    .sort((a, b) => Number(b[field] ?? 0) - Number(a[field] ?? 0));
+function pctFmt(value: number, decimals = 2): string {
+  return `${(value * 100).toFixed(decimals)}%`;
+}
+
+/** Convert quintile probabilities into a single "net confidence" score in [-1, 1].
+ *  Long-bias: top-quintile probability (anchored at 0.2 = random); negative if
+ *  the model says it's MORE likely to be bottom-quintile than top.
+ */
+function netConfidence(pick: TopPick, direction: 'long' | 'short'): number {
+  const top = pick.top_quintile_proba ?? 0.2;
+  const bot = pick.bottom_quintile_proba ?? 0.2;
+  return direction === 'long' ? top - bot : bot - top;
 }
 
 export function DashboardPage() {
   const universesQ = useUniverses();
   const universes = useMemo(() => universesQ.data ?? [], [universesQ.data]);
-
   const [universe, setUniverse] = useState<string>('');
-  const [direction, setDirection] = useState<Direction>('long');
 
-  // Lock selection to the first universe once we have data.
   useEffect(() => {
-    if (!universe && universes.length > 0) {
-      setUniverse(universes[0].name);
-    }
+    if (!universe && universes.length > 0) setUniverse(universes[0].name);
   }, [universe, universes]);
 
-  const picksQ = useTopPicks(
-    { universe, direction, limit: 20 },
-    Boolean(universe),
-  );
+  const longsQ = useTopPicks({ universe, direction: 'long', limit: PICKS_PER_SIDE }, Boolean(universe));
+  const shortsQ = useTopPicks({ universe, direction: 'short', limit: PICKS_PER_SIDE }, Boolean(universe));
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-4 rounded border border-gray-200 bg-white p-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-gray-800 bg-gray-900/60 p-4">
         <UniverseSelector
           value={universe}
           onChange={setUniverse}
           universes={universes}
           loading={universesQ.isLoading}
         />
-        <DirectionToggle value={direction} onChange={setDirection} />
-        {picksQ.data?.as_of ? (
-          <div className="ml-auto flex items-center gap-1 text-sm text-gray-600">
-            <CalendarDays className="h-4 w-4" />
-            <span className="font-mono">{picksQ.data.as_of}</span>
+        {longsQ.data?.as_of ? (
+          <div className="ml-auto flex items-center gap-2 text-sm text-gray-400">
+            <CalendarDays className="h-4 w-4 text-gray-500" />
+            <span className="font-mono">{longsQ.data.as_of}</span>
           </div>
         ) : null}
       </div>
@@ -66,98 +62,154 @@ export function DashboardPage() {
 
       {universesQ.isLoading ? <LoadingSpinner label="Loading universes…" /> : null}
 
-      {!universesQ.isLoading && universes.length === 0 ? (
-        <EmptyState
-          title="No universes loaded yet"
-          hint={
-            <span>
-              Run{' '}
-              <code className="rounded bg-gray-100 px-1 font-mono">
-                python -m scripts.refresh_universes
-              </code>{' '}
-              to populate the membership table.
-            </span>
-          }
-        />
+      {universe ? (
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <PicksColumn
+            universe={universe}
+            direction="long"
+            data={longsQ.data?.picks ?? []}
+            isLoading={longsQ.isLoading}
+            isError={longsQ.isError}
+            error={longsQ.error}
+          />
+          <PicksColumn
+            universe={universe}
+            direction="short"
+            data={shortsQ.data?.picks ?? []}
+            isLoading={shortsQ.isLoading}
+            isError={shortsQ.isError}
+            error={shortsQ.error}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PicksColumn({
+  universe, direction, data, isLoading, isError, error,
+}: {
+  universe: string;
+  direction: 'long' | 'short';
+  data: TopPick[];
+  isLoading: boolean;
+  isError: boolean;
+  error: unknown;
+}) {
+  const colorClass = direction === 'long' ? 'text-emerald-400' : 'text-rose-400';
+  const Icon = direction === 'long' ? TrendingUp : TrendingDown;
+
+  return (
+    <section className="space-y-3">
+      <header className="flex items-baseline justify-between">
+        <h2 className={`flex items-center gap-2 text-base font-semibold ${colorClass}`}>
+          <Icon className="h-5 w-5" />
+          Top {direction} picks
+        </h2>
+        <p className="text-xs text-gray-500">
+          {data.length > 0 ? `${data.length} predictions` : ''}
+        </p>
+      </header>
+
+      {isLoading ? <LoadingSpinner label="Loading picks…" /> : null}
+      {isError ? <ErrorMessage error={error} /> : null}
+      {!isLoading && !isError && data.length === 0 ? (
+        <EmptyState title="No predictions yet" hint="Run jobs.daily_predict." />
       ) : null}
 
-      {universe ? <PicksSection universe={universe} direction={direction} /> : null}
-    </div>
-  );
-}
-
-function PicksSection({ universe, direction }: { universe: string; direction: Direction }) {
-  const picksQ = useTopPicks({ universe, direction, limit: 20 });
-
-  if (picksQ.isLoading) return <LoadingSpinner label="Loading picks…" />;
-  if (picksQ.isError) {
-    return <ErrorMessage error={picksQ.error} onRetry={() => picksQ.refetch()} />;
-  }
-  const data = picksQ.data;
-  if (!data || data.picks.length === 0) {
-    return (
-      <EmptyState
-        title="No predictions for this universe yet"
-        hint={
-          <span>
-            Run{' '}
-            <code className="rounded bg-gray-100 px-1 font-mono">
-              python -m jobs.daily_predict
-            </code>{' '}
-            to populate predictions for the most recent trading day.
-          </span>
-        }
-      />
-    );
-  }
-
-  const highConf = pickHighConfidence(data.picks, direction);
-
-  return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <Section
-        title={direction === 'long' ? 'Top long picks' : 'Top short picks'}
-        subtitle={`Sorted by predicted 5-day return ${direction === 'long' ? 'descending' : 'ascending'}.`}
-      >
-        <PicksTable universe={universe} direction={direction} picks={data.picks} />
-      </Section>
-      <Section
-        title={
-          direction === 'long' ? 'High-confidence long' : 'High-confidence short'
-        }
-        subtitle={`Filtered by ${
-          direction === 'long' ? 'top' : 'bottom'
-        }-quintile probability > ${(HIGH_CONF_THRESHOLD * 100).toFixed(0)}%.`}
-      >
-        {highConf.length ? (
-          <PicksTable universe={universe} direction={direction} picks={highConf} />
-        ) : (
-          <EmptyState
-            title="No high-confidence picks"
-            hint="Try the other direction or wait for tomorrow's predictions."
-          />
-        )}
-      </Section>
-    </div>
-  );
-}
-
-function Section({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-2">
-      <header>
-        <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-        <p className="text-xs text-gray-500">{subtitle}</p>
-      </header>
-      {children}
+      <div className="space-y-2">
+        {data.map((pick) => (
+          <PickCard key={pick.symbol} pick={pick} universe={universe} direction={direction} />
+        ))}
+      </div>
     </section>
+  );
+}
+
+function PickCard({ pick, universe, direction }: {
+  pick: TopPick;
+  universe: string;
+  direction: 'long' | 'short';
+}) {
+  // Pull last 30 trading days of OHLCV for the sparkline.
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(start.getDate() - 60);
+  const ohlcvQ = useStockOhlcv(
+    pick.symbol,
+    start.toISOString().slice(0, 10),
+    today.toISOString().slice(0, 10),
+  );
+  const sparkData = useMemo(() => {
+    const bars = ohlcvQ.data?.bars ?? [];
+    return bars.slice(-30).map((b) => ({ value: b.close }));
+  }, [ohlcvQ.data]);
+
+  const ret = pick.predicted_return_5d;
+  const conf = netConfidence(pick, direction);
+  const isPos = ret >= 0;
+  const isLong = direction === 'long';
+  const accentColor = isLong ? 'text-emerald-400' : 'text-rose-400';
+  const ringColor = isLong ? 'ring-emerald-500/20' : 'ring-rose-500/20';
+  const bgColor = isLong ? 'bg-emerald-500/[0.04]' : 'bg-rose-500/[0.04]';
+
+  // Confidence bar: scale [-0.4, +0.4] -> [0%, 100%]
+  const confBarPct = Math.max(0, Math.min(100, ((conf + 0.4) / 0.8) * 100));
+
+  return (
+    <Link
+      to={`/stocks/${universe}/${encodeURIComponent(pick.symbol)}`}
+      className={[
+        'block rounded-lg border border-gray-800/80 px-4 py-3 transition-all',
+        'hover:border-gray-700 hover:bg-gray-900/80 ring-1',
+        ringColor,
+        bgColor,
+      ].join(' ')}
+    >
+      <div className="flex items-center gap-4">
+        {/* Symbol + name (3 cols on grid, but flex here) */}
+        <div className="min-w-[100px]">
+          <div className="font-mono text-sm font-semibold text-gray-100">
+            #{pick.rank} {pick.symbol}
+          </div>
+          <div className="truncate text-xs text-gray-500" title={pick.company_name ?? ''}>
+            {pick.company_name ?? '—'}
+          </div>
+        </div>
+
+        {/* Sparkline */}
+        <div className="w-[120px] flex-shrink-0">
+          <Sparkline data={sparkData} positive={isPos} height={32} />
+        </div>
+
+        {/* Predicted return */}
+        <div className="ml-auto text-right">
+          <div className={`font-mono text-base font-semibold ${accentColor}`}>
+            {ret >= 0 ? '+' : ''}{pctFmt(ret)}
+          </div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">
+            5d expected
+          </div>
+        </div>
+
+        {/* Net confidence bar (compact) */}
+        <div className="w-[140px] flex-shrink-0">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-gray-500">
+              confidence
+            </span>
+            <span className={`font-mono text-xs ${accentColor}`}>
+              {conf >= 0 ? '+' : ''}{pctFmt(conf, 1)}
+            </span>
+          </div>
+          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+            <div
+              className={isLong ? 'h-full bg-emerald-500/80' : 'h-full bg-rose-500/80'}
+              style={{ width: `${confBarPct}%` }}
+            />
+          </div>
+        </div>
+      </div>
+    </Link>
   );
 }

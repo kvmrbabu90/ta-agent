@@ -14,10 +14,10 @@ export function UniverseSelector({
   loading = false,
 }: UniverseSelectorProps) {
   return (
-    <label className="flex items-center gap-2 text-sm text-gray-700">
-      <span className="font-medium">Universe</span>
+    <label className="flex items-center gap-2 text-sm text-gray-300">
+      <span className="text-xs uppercase tracking-wider text-gray-500">Universe</span>
       <select
-        className="rounded border border-gray-300 bg-white px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+        className="rounded-md border border-gray-700 bg-gray-800/60 px-2 py-1 text-sm text-gray-100 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
         value={value}
         disabled={loading || universes.length === 0}
         onChange={(e) => onChange(e.target.value)}
