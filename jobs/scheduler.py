@@ -72,6 +72,66 @@ def _job_us_ingest() -> None:
     _safe_run("us_ingest", lambda: daily_update("SP500"))
 
 
+def _job_us_yfinance_refresh() -> None:
+    """Refresh SP500 daily bars via yfinance — works without IB Gateway.
+
+    Used by the CT-anchored 8 AM / 5 PM triggers below. Lighter-weight
+    than the IB path: no socket, no auth, just rate-limited HTTP. Each
+    symbol's missing tail is computed and pulled.
+    """
+    from packages.ingestion.adapters.yfinance_adapter import daily_update
+
+    _safe_run("us_yf_refresh", lambda: daily_update("SP500"))
+
+
+def _job_spy_refresh() -> None:
+    """Pull the most recent SPY bars (benchmark for /performance + paper trade)."""
+    from datetime import date, timedelta
+
+    from packages.ingestion.adapters.yfinance_adapter import fetch_daily_bars
+    from packages.ingestion.storage import get_conn, upsert_ohlcv
+
+    def _refresh_spy() -> dict:
+        end = date.today()
+        start = end - timedelta(days=10)
+        df = fetch_daily_bars("SPY", start, end, universe="", exchange="NYSE")
+        if df.empty:
+            return {"refreshed": 0}
+        with get_conn() as conn:
+            n = upsert_ohlcv(df, conn=conn)
+        return {"refreshed": int(n)}
+
+    _safe_run("spy_refresh", _refresh_spy)
+
+
+def _job_paper_backtest() -> None:
+    """Replay the model's predictions through the paper-trading engine,
+    refreshing the equity curve, open positions, and trade log."""
+    from packages.paper_trading import StrategyConfig, backtest
+
+    _safe_run(
+        "paper_backtest",
+        lambda: backtest(StrategyConfig(run_id="default")),
+    )
+
+
+def _job_us_ct_pipeline() -> None:
+    """Combined CT-anchored job: refresh OHLCV (SP500 + SPY), generate
+    today's predictions, settle anything that's matured, then re-run the
+    paper backtest. Wired to fire twice daily at 8 AM CT and 5 PM CT.
+
+    Each step is wrapped in its own _safe_run so a failing step doesn't
+    short-circuit the rest.
+    """
+    log.info("[scheduler] us_ct_pipeline: starting")
+    _job_us_yfinance_refresh()
+    _job_spy_refresh()
+    _job_daily_predict()
+    _job_settlement_catchup()
+    _job_paper_backtest()
+    log.info("[scheduler] us_ct_pipeline: complete")
+
+
 def _job_india_ingest() -> None:
     from packages.ingestion.adapters.kite_adapter import daily_update
 
@@ -181,6 +241,28 @@ def make_scheduler() -> BlockingScheduler:
         CronTrigger(month="1,4,7,10", day=5, hour=7, minute=0, timezone="UTC"),
         id="universe_refresh",
         name="Quarterly universe membership refresh",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # --- US CT-anchored full pipeline (8 AM + 5 PM CT) --------------------
+    # Uses America/Chicago tz so DST is automatic. Runs the full chain on
+    # each tick: yfinance OHLCV refresh -> SPY refresh -> daily_predict ->
+    # settlement catch-up -> paper_trading backtest. Each step is logged
+    # individually; a failure in one step doesn't abort the rest.
+    sched.add_job(
+        _job_us_ct_pipeline,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=0, timezone="America/Chicago"),
+        id="us_pipeline_8am_ct",
+        name="US pipeline (08:00 CT pre-market)",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _job_us_ct_pipeline,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone="America/Chicago"),
+        id="us_pipeline_5pm_ct",
+        name="US pipeline (17:00 CT post-close)",
         max_instances=1,
         coalesce=True,
     )

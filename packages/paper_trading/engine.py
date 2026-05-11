@@ -28,7 +28,7 @@ Schema:
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -38,7 +38,6 @@ import pandas as pd
 from packages.common.config import settings
 from packages.common.logging import log
 from packages.ingestion.storage import _connect as duck_connect
-
 
 _PAPER_DDL = """
 CREATE TABLE IF NOT EXISTS paper_runs (

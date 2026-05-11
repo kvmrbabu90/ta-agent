@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, TrendingDown, TrendingUp } from 'lucide-react';
+import { AlertTriangle, CalendarDays, TrendingDown, TrendingUp } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useUniverses } from '@/hooks/useUniverses';
 import { useTopPicks } from '@/hooks/useTopPicks';
@@ -12,19 +12,64 @@ import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
 
 const PICKS_PER_SIDE = 10;
+// Pull a wider candidate pool so strict-mode filtering still leaves enough.
+const CANDIDATE_LIMIT = 50;
 
 function pctFmt(value: number, decimals = 2): string {
   return `${(value * 100).toFixed(decimals)}%`;
 }
 
-/** Convert quintile probabilities into a single "net confidence" score in [-1, 1].
- *  Long-bias: top-quintile probability (anchored at 0.2 = random); negative if
- *  the model says it's MORE likely to be bottom-quintile than top.
+/** Direction-agreement: how much more the model thinks this stock is in the
+ *  desired tail than the opposite tail.
+ *  Long: top_q − bot_q  (positive when model agrees this is a top pick)
+ *  Short: bot_q − top_q  (positive when model agrees this is a bottom pick)
+ *  Range roughly [-0.6, +0.7]. Random baseline = 0.
  */
-function netConfidence(pick: TopPick, direction: 'long' | 'short'): number {
+function directionAgreement(pick: TopPick, direction: 'long' | 'short'): number {
   const top = pick.top_quintile_proba ?? 0.2;
   const bot = pick.bottom_quintile_proba ?? 0.2;
   return direction === 'long' ? top - bot : bot - top;
+}
+
+/** Combined score: rewards both magnitude of expected return AND classifier
+ *  agreement on direction. score = predicted_return × (1 + direction_agreement).
+ *  - Both signals agree strongly → score amplified
+ *  - Signals disagree (negative direction_agreement) → score shrinks toward 0
+ *  Used to re-rank picks after strict-mode filtering.
+ *
+ *  For longs (predicted > 0), we want HIGHER score → better pick.
+ *  For shorts (predicted < 0), we want LOWER (more negative) score → better short.
+ */
+function combinedScore(pick: TopPick, direction: 'long' | 'short'): number {
+  const ret = pick.predicted_return_5d;
+  const agreement = directionAgreement(pick, direction);
+  // For shorts, agreement is bot_q − top_q which is positive when model
+  // agrees with shortness; multiplying a negative return by (1 + positive)
+  // makes it more negative, which is what we want.
+  if (direction === 'long') {
+    return ret * (1 + agreement);
+  } else {
+    // For shorts, formula stays the same but we re-derive `agreement` against
+    // the short direction (already done in directionAgreement).
+    return ret * (1 + agreement);
+  }
+}
+
+/** Sign mismatch between the regression head and the classifier:
+ *  - Long pick where model thinks it's MORE likely bottom-quintile
+ *  - Short pick where model thinks it's MORE likely top-quintile
+ *  These are amber-flag picks even if the direction-agreement bar is short.
+ */
+function isMismatch(pick: TopPick, direction: 'long' | 'short'): boolean {
+  return directionAgreement(pick, direction) < 0;
+}
+
+/** Strict-mode filter: keep only picks whose predicted return aligns with
+ *  the requested direction. Drops the "least bearish" pickup as a long. */
+function strictFilter(picks: TopPick[], direction: 'long' | 'short'): TopPick[] {
+  return picks.filter((p) =>
+    direction === 'long' ? p.predicted_return_5d > 0 : p.predicted_return_5d < 0,
+  );
 }
 
 export function DashboardPage() {
@@ -36,8 +81,9 @@ export function DashboardPage() {
     if (!universe && universes.length > 0) setUniverse(universes[0].name);
   }, [universe, universes]);
 
-  const longsQ = useTopPicks({ universe, direction: 'long', limit: PICKS_PER_SIDE }, Boolean(universe));
-  const shortsQ = useTopPicks({ universe, direction: 'short', limit: PICKS_PER_SIDE }, Boolean(universe));
+  // Pull a wider candidate pool so strict-mode + re-ranking has enough to work with.
+  const longsQ = useTopPicks({ universe, direction: 'long', limit: CANDIDATE_LIMIT }, Boolean(universe));
+  const shortsQ = useTopPicks({ universe, direction: 'short', limit: CANDIDATE_LIMIT }, Boolean(universe));
 
   return (
     <div className="space-y-6">
@@ -99,6 +145,27 @@ function PicksColumn({
   const colorClass = direction === 'long' ? 'text-emerald-400' : 'text-rose-400';
   const Icon = direction === 'long' ? TrendingUp : TrendingDown;
 
+  // 1) Strict mode: drop picks that don't align with direction's sign.
+  // 2) Re-sort the survivors by combined_score (rewards agreement).
+  // 3) Re-rank 1..N. Cap at PICKS_PER_SIDE.
+  const ranked = useMemo(() => {
+    const filtered = strictFilter(data, direction);
+    const sorted = [...filtered].sort((a, b) => {
+      const sa = combinedScore(a, direction);
+      const sb = combinedScore(b, direction);
+      // For longs, descending; for shorts, ascending (most-negative = best short).
+      return direction === 'long' ? sb - sa : sa - sb;
+    });
+    return sorted.slice(0, PICKS_PER_SIDE).map((pick, i) => ({
+      ...pick,
+      rank: i + 1,
+    }));
+  }, [data, direction]);
+
+  // No-actionable-signal empty state for strict mode.
+  const hasUniverseData = data.length > 0;
+  const noActionable = hasUniverseData && ranked.length === 0;
+
   return (
     <section className="space-y-3">
       <header className="flex items-baseline justify-between">
@@ -107,18 +174,30 @@ function PicksColumn({
           Top {direction} picks
         </h2>
         <p className="text-xs text-gray-500">
-          {data.length > 0 ? `${data.length} predictions` : ''}
+          {ranked.length > 0 ? `${ranked.length} actionable` : ''}
         </p>
       </header>
 
       {isLoading ? <LoadingSpinner label="Loading picks…" /> : null}
       {isError ? <ErrorMessage error={error} /> : null}
-      {!isLoading && !isError && data.length === 0 ? (
+
+      {!isLoading && !isError && !hasUniverseData ? (
         <EmptyState title="No predictions yet" hint="Run jobs.daily_predict." />
       ) : null}
 
+      {noActionable ? (
+        <EmptyState
+          title={`No actionable ${direction} signal today`}
+          hint={
+            direction === 'long'
+              ? 'Model has zero stocks with positive expected return. Market view is bearish today.'
+              : 'Model has zero stocks with negative expected return. Market view is bullish today.'
+          }
+        />
+      ) : null}
+
       <div className="space-y-2">
-        {data.map((pick) => (
+        {ranked.map((pick) => (
           <PickCard key={pick.symbol} pick={pick} universe={universe} direction={direction} />
         ))}
       </div>
@@ -146,15 +225,29 @@ function PickCard({ pick, universe, direction }: {
   }, [ohlcvQ.data]);
 
   const ret = pick.predicted_return_5d;
-  const conf = netConfidence(pick, direction);
+  const agreement = directionAgreement(pick, direction);
+  const mismatch = isMismatch(pick, direction);
   const isPos = ret >= 0;
   const isLong = direction === 'long';
+
+  // Card accent always reflects the column direction (so users can scan Long/Short visually).
   const accentColor = isLong ? 'text-emerald-400' : 'text-rose-400';
   const ringColor = isLong ? 'ring-emerald-500/20' : 'ring-rose-500/20';
   const bgColor = isLong ? 'bg-emerald-500/[0.04]' : 'bg-rose-500/[0.04]';
 
-  // Confidence bar: scale [-0.4, +0.4] -> [0%, 100%]
-  const confBarPct = Math.max(0, Math.min(100, ((conf + 0.4) / 0.8) * 100));
+  // Direction agreement bar:
+  //  - Map [-0.4, +0.4] -> [0%, 100%]
+  //  - Color RED when agreement < 0 (model disagrees with the requested direction)
+  //  - Color GREEN/RED matching the column otherwise
+  const agreementBarPct = Math.max(0, Math.min(100, ((agreement + 0.4) / 0.8) * 100));
+  const agreementBarColor =
+    agreement < 0 ? 'bg-amber-500/80'
+    : isLong ? 'bg-emerald-500/80'
+    : 'bg-rose-500/80';
+  const agreementValueColor =
+    agreement < 0 ? 'text-amber-400'
+    : isLong ? 'text-emerald-400'
+    : 'text-rose-400';
 
   return (
     <Link
@@ -167,7 +260,7 @@ function PickCard({ pick, universe, direction }: {
       ].join(' ')}
     >
       <div className="flex items-center gap-4">
-        {/* Symbol + name (3 cols on grid, but flex here) */}
+        {/* Symbol + name */}
         <div className="min-w-[100px]">
           <div className="font-mono text-sm font-semibold text-gray-100">
             #{pick.rank} {pick.symbol}
@@ -192,20 +285,26 @@ function PickCard({ pick, universe, direction }: {
           </div>
         </div>
 
-        {/* Net confidence bar (compact) */}
-        <div className="w-[140px] flex-shrink-0">
+        {/* Direction agreement bar with sign-aware color + amber warning */}
+        <div className="w-[160px] flex-shrink-0">
           <div className="flex items-baseline justify-between">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">
-              confidence
+            <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500">
+              dir. agreement
+              {mismatch ? (
+                <AlertTriangle
+                  className="h-3 w-3 text-amber-400"
+                  aria-label="Regression and classifier disagree on direction"
+                />
+              ) : null}
             </span>
-            <span className={`font-mono text-xs ${accentColor}`}>
-              {conf >= 0 ? '+' : ''}{pctFmt(conf, 1)}
+            <span className={`font-mono text-xs ${agreementValueColor}`}>
+              {agreement >= 0 ? '+' : ''}{pctFmt(agreement, 1)}
             </span>
           </div>
           <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
             <div
-              className={isLong ? 'h-full bg-emerald-500/80' : 'h-full bg-rose-500/80'}
-              style={{ width: `${confBarPct}%` }}
+              className={`h-full ${agreementBarColor}`}
+              style={{ width: `${agreementBarPct}%` }}
             />
           </div>
         </div>
