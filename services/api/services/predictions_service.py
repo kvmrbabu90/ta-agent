@@ -31,6 +31,7 @@ from services.api.schemas import (
     OHLCVResponse,
     PerformanceResponse,
     StockHistoryResponse,
+    StrategyEquityPoint,
     TopPick,
     TopPicksResponse,
     UniverseInfo,
@@ -303,6 +304,121 @@ def _ic_timeseries(df: pd.DataFrame) -> list[ICPoint]:
     return out
 
 
+def _annualized_sharpe(daily_returns: np.ndarray) -> float | None:
+    """Annualized Sharpe assuming risk-free = 0. Need ≥5 obs."""
+    valid = daily_returns[np.isfinite(daily_returns)]
+    if len(valid) < 5:
+        return None
+    mu = float(np.mean(valid))
+    sigma = float(np.std(valid, ddof=1))
+    if sigma == 0:
+        return None
+    return float(mu / sigma * np.sqrt(252))
+
+
+def _annualized_sortino(daily_returns: np.ndarray) -> float | None:
+    valid = daily_returns[np.isfinite(daily_returns)]
+    if len(valid) < 5:
+        return None
+    mu = float(np.mean(valid))
+    downside = valid[valid < 0.0]
+    if len(downside) == 0:
+        return None
+    downside_dev = float(np.sqrt(np.mean(downside ** 2)))
+    if downside_dev == 0:
+        return None
+    return float(mu / downside_dev * np.sqrt(252))
+
+
+def _strategy_daily_returns(settled: pd.DataFrame) -> pd.Series:
+    """Build a per-date long-short decile-spread return series.
+
+    For each date with ≥10 settled predictions:
+      - top decile = top 10% by predicted_return
+      - bottom decile = bottom 10%
+      - daily return = mean(top.realized) - mean(bottom.realized)
+
+    Returns a pandas Series indexed by as_of (date), values = daily returns.
+    """
+    if settled.empty:
+        return pd.Series(dtype=float)
+    out: dict = {}
+    for d, group in settled.groupby("as_of"):
+        if len(group) < 10:
+            continue
+        sorted_group = group.sort_values("predicted_return")
+        n = max(1, int(round(len(group) * 0.1)))
+        bot = sorted_group.head(n)["realized_return"].to_numpy()
+        top = sorted_group.tail(n)["realized_return"].to_numpy()
+        if len(top) == 0 or len(bot) == 0:
+            continue
+        out[d] = float(top.mean() - bot.mean())
+    if not out:
+        return pd.Series(dtype=float)
+    return pd.Series(out).sort_index()
+
+
+def _spy_daily_returns(start: date, end: date) -> pd.Series:
+    """Pull SPY 5-day forward returns from market.duckdb.
+
+    We use 5-day returns to match the strategy horizon (model predicts 5d
+    forward return; strategy holds for similar horizon implicitly).
+    Returns a Series indexed by as_of date.
+    """
+    import duckdb
+
+    from packages.common.config import settings as cfg
+
+    duck = duckdb.connect(cfg.duckdb_path, read_only=True)
+    try:
+        df = duck.execute(
+            """
+            WITH ranked AS (
+                SELECT bar_date, close,
+                       ROW_NUMBER() OVER (PARTITION BY symbol, bar_date ORDER BY ingested_at DESC) AS rn
+                FROM ohlcv_daily
+                WHERE symbol = 'SPY' AND bar_date BETWEEN ? AND ?
+            )
+            SELECT bar_date, close FROM ranked WHERE rn = 1 ORDER BY bar_date
+            """,
+            [start, end + timedelta(days=10)],
+        ).df()
+    finally:
+        duck.close()
+    if df.empty:
+        return pd.Series(dtype=float)
+    df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
+    df = df.sort_values("bar_date").reset_index(drop=True)
+    df["spy_5d_return"] = df["close"].pct_change(periods=5).shift(-5)
+    return df.dropna(subset=["spy_5d_return"]).set_index("bar_date")["spy_5d_return"]
+
+
+def _build_equity_curve(
+    strategy_ret: pd.Series, spy_ret: pd.Series
+) -> list[StrategyEquityPoint]:
+    """Combine strategy + SPY daily returns into a cumulative-return curve."""
+    if strategy_ret.empty:
+        return []
+    df = pd.DataFrame({"strategy_return": strategy_ret})
+    if not spy_ret.empty:
+        df = df.join(spy_ret.rename("spy_return"), how="left")
+    else:
+        df["spy_return"] = float("nan")
+    df = df.sort_index()
+    df["cum_strategy_return"] = (1.0 + df["strategy_return"].fillna(0.0)).cumprod() - 1.0
+    df["cum_spy_return"] = (1.0 + df["spy_return"].fillna(0.0)).cumprod() - 1.0
+    out = []
+    for d, row in df.iterrows():
+        out.append(StrategyEquityPoint(
+            bar_date=d,
+            strategy_return=float(row["strategy_return"]),
+            spy_return=(None if pd.isna(row["spy_return"]) else float(row["spy_return"])),
+            cum_strategy_return=float(row["cum_strategy_return"]),
+            cum_spy_return=(None if pd.isna(row["cum_spy_return"]) else float(row["cum_spy_return"])),
+        ))
+    return out
+
+
 def get_performance(
     sqlite_conn: sqlite3.Connection,
     universe: str,
@@ -367,6 +483,33 @@ def get_performance(
         hit_rate = None
         spread = None
 
+    # Directional accuracy excluding "neutral" predictions (|pred| < 0.1%).
+    neutral_threshold = 0.001
+    directional_acc: float | None = None
+    n_directional = 0
+    if not settled.empty:
+        non_neutral = settled[settled["predicted_return"].abs() > neutral_threshold]
+        if not non_neutral.empty:
+            non_neutral_signs = (
+                np.sign(non_neutral["realized_return"].to_numpy())
+                == np.sign(non_neutral["predicted_return"].to_numpy())
+            )
+            directional_acc = float(non_neutral_signs.mean())
+            n_directional = int(len(non_neutral))
+
+    # Strategy daily returns + SPY benchmark + Sharpe/Sortino + equity curve.
+    strategy_ret = _strategy_daily_returns(settled)
+    if not strategy_ret.empty:
+        spy_ret = _spy_daily_returns(strategy_ret.index.min(), strategy_ret.index.max())
+    else:
+        spy_ret = pd.Series(dtype=float)
+
+    sharpe = _annualized_sharpe(strategy_ret.to_numpy()) if not strategy_ret.empty else None
+    sortino = _annualized_sortino(strategy_ret.to_numpy()) if not strategy_ret.empty else None
+    spy_sharpe = _annualized_sharpe(spy_ret.to_numpy()) if not spy_ret.empty else None
+    spy_sortino = _annualized_sortino(spy_ret.to_numpy()) if not spy_ret.empty else None
+    equity_curve = _build_equity_curve(strategy_ret, spy_ret)
+
     return PerformanceResponse(
         universe=universe,
         lookback_days=lookback_days,
@@ -377,6 +520,13 @@ def get_performance(
         ic_t_stat=t_stat,
         hit_rate=hit_rate,
         decile_spread_5d=spread,
+        directional_accuracy=directional_acc,
+        n_directional_observations=n_directional,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        spy_sharpe_ratio=spy_sharpe,
+        spy_sortino_ratio=spy_sortino,
+        equity_curve=equity_curve,
         calibration=_calibration_table(settled),
         ic_timeseries=_ic_timeseries(settled),
     )

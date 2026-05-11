@@ -111,6 +111,14 @@ class ICPoint(_BaseResponse):
     n_stocks: int
 
 
+class StrategyEquityPoint(_BaseResponse):
+    bar_date: date
+    strategy_return: float
+    spy_return: float | None = None
+    cum_strategy_return: float
+    cum_spy_return: float | None = None
+
+
 class PerformanceResponse(_BaseResponse):
     universe: str
     lookback_days: int
@@ -122,6 +130,16 @@ class PerformanceResponse(_BaseResponse):
     mean_daily_rank_ic: float | None = None
     hit_rate: float | None = None
     decile_spread_5d: float | None = None
+    # New (frontend-driven): direction-only accuracy excluding tiny preds.
+    directional_accuracy: float | None = None
+    n_directional_observations: int | None = None
+    # Risk-adjusted metrics on the long-short decile spread P&L (vs SPY):
+    sharpe_ratio: float | None = None
+    sortino_ratio: float | None = None
+    spy_sharpe_ratio: float | None = None
+    spy_sortino_ratio: float | None = None
+    # Cumulative return curves for the strategy vs SPY (chart fuel):
+    equity_curve: list[StrategyEquityPoint] = Field(default_factory=list)
     calibration: list[CalibrationBucket] = Field(default_factory=list)
     ic_timeseries: list[ICPoint] = Field(default_factory=list)
 
@@ -145,3 +163,66 @@ class ExplainResponse(_BaseResponse):
     as_of: date
     predicted_return_5d: float | None = None
     top_features: list[FeatureContribution] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# /paper/* — paper-trading API (a backtest-driven equity curve + positions)
+# ---------------------------------------------------------------------------
+
+
+class PaperRunSummary(_BaseResponse):
+    run_id: str
+    universe: str
+    starting_cash: float
+    position_size: float
+    n_long: int
+    n_short: int
+    short_threshold: float
+    started_at: str
+    first_trade_date: date | None = None
+    last_trade_date: date | None = None
+    final_equity: float | None = None
+    final_realized_pnl: float | None = None
+    notes: str | None = None
+
+
+class PaperEquityPoint(_BaseResponse):
+    trade_date: date
+    snapshot_kind: str  # 'open_8am_ct' | 'close_5pm_ct'
+    equity: float
+    cash: float
+    long_mv: float
+    short_mv: float
+    realized_pnl: float
+    unrealized_pnl: float
+
+
+class PaperPosition(_BaseResponse):
+    symbol: str
+    side: str  # 'long' | 'short'
+    qty: float
+    entry_price: float
+    entry_date: date
+    last_price: float | None = None
+    unrealized_pnl: float = 0.0
+
+
+class PaperTrade(_BaseResponse):
+    trade_date: date
+    symbol: str
+    side: str  # 'long_open', 'long_close', 'short_open', 'short_close'
+    qty: float
+    fill_price: float
+    cash_delta: float
+    realized_pnl: float | None = None
+
+
+class PaperSnapshotResponse(_BaseResponse):
+    run: PaperRunSummary
+    equity_curve: list[PaperEquityPoint] = Field(default_factory=list)
+    positions: list[PaperPosition] = Field(default_factory=list)
+
+
+class PaperTradesResponse(_BaseResponse):
+    run_id: str
+    trades: list[PaperTrade] = Field(default_factory=list)

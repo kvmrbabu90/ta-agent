@@ -24,6 +24,9 @@ from services.api.routes import (
     explain as explain_routes,
 )
 from services.api.routes import (
+    paper as paper_routes,
+)
+from services.api.routes import (
     performance as performance_routes,
 )
 from services.api.routes import (
@@ -88,6 +91,7 @@ app.include_router(stocks_routes.router)
 app.include_router(performance_routes.router)
 app.include_router(explain_routes.router)
 app.include_router(admin_routes.router)
+app.include_router(paper_routes.router)
 
 
 @app.get("/health", tags=["meta"])
