@@ -36,6 +36,12 @@ from services.api.routes import (
     stocks as stocks_routes,
 )
 from services.api.routes import (
+    news as news_routes,
+)
+from services.api.routes import (
+    system as system_routes,
+)
+from services.api.routes import (
     universe as universe_routes,
 )
 
@@ -92,6 +98,8 @@ app.include_router(performance_routes.router)
 app.include_router(explain_routes.router)
 app.include_router(admin_routes.router)
 app.include_router(paper_routes.router)
+app.include_router(system_routes.router)
+app.include_router(news_routes.router)
 
 
 @app.get("/health", tags=["meta"])

@@ -32,7 +32,7 @@ from packages.labels.targets import (
 def _load_membership_for_universe(
     universe: str, *, duckdb_path: str | None = None
 ) -> pd.DataFrame:
-    with get_conn(duckdb_path) as conn:
+    with get_conn(duckdb_path, read_only=True) as conn:
         return conn.execute(
             "SELECT universe, symbol, start_date, end_date FROM index_membership WHERE universe = ?",
             [universe],
@@ -92,7 +92,7 @@ def _load_universe_ohlcv(
     Symbol-only fetch causes cross-exchange collisions (e.g. HAL = Halliburton
     on NYSE and Hindustan Aeronautics on NSE), which corrupts forward returns.
     """
-    with get_conn(duckdb_path) as conn:
+    with get_conn(duckdb_path, read_only=True) as conn:
         sym_exch_pairs = conn.execute(
             """
             SELECT DISTINCT symbol, exchange

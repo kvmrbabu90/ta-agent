@@ -184,6 +184,12 @@ class PaperRunSummary(_BaseResponse):
     final_equity: float | None = None
     final_realized_pnl: float | None = None
     notes: str | None = None
+    # v2 strategy fields — overlapping-portfolios + stop-loss + IBKR Lite
+    holding_days: int | None = None
+    commission_model: str | None = None
+    stop_loss_enabled: bool | None = None
+    support_lookback_days: int | None = None
+    stop_buffer_pct: float | None = None
 
 
 class PaperEquityPoint(_BaseResponse):
@@ -210,7 +216,8 @@ class PaperPosition(_BaseResponse):
 class PaperTrade(_BaseResponse):
     trade_date: date
     symbol: str
-    side: str  # 'long_open', 'long_close', 'short_open', 'short_close'
+    # 'long_open' | 'long_close' | 'stop_close' (v2); 'short_*' kept for legacy rows
+    side: str
     qty: float
     fill_price: float
     cash_delta: float
@@ -226,3 +233,35 @@ class PaperSnapshotResponse(_BaseResponse):
 class PaperTradesResponse(_BaseResponse):
     run_id: str
     trades: list[PaperTrade] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# /system/status — UI freshness indicator
+# ---------------------------------------------------------------------------
+
+
+class NewsVerdict(_BaseResponse):
+    symbol: str
+    verdict: str  # 'PANIC' | 'RESET' | 'UNCLEAR'
+    confidence: float
+    key_factors: list[str] = Field(default_factory=list)
+    evidence_sources: list[str] = Field(default_factory=list)
+    n_sources: int | None = None
+    model_name: str | None = None
+    trail_5d: float | None = None
+    trail_20d: float | None = None
+    predicted_return: float | None = None
+
+
+class NewsVerdictsResponse(_BaseResponse):
+    universe: str
+    as_of: date
+    verdicts: list[NewsVerdict] = Field(default_factory=list)
+
+
+class SystemStatusResponse(_BaseResponse):
+    # ISO-8601 UTC timestamp of the last pipeline run that ran to completion
+    # (paper_runs.started_at, updated at the end of the daily pipeline).
+    last_refresh_utc: str | None = None
+    # Latest bar_date present in ohlcv_daily (YYYY-MM-DD).
+    latest_bar_date: str | None = None

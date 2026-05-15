@@ -27,7 +27,11 @@ _PAPER_DB = str(Path(settings.predictions_sqlite_path).parent / "paper.sqlite")
 
 def _conn() -> sqlite3.Connection:
     init_paper_db(_PAPER_DB)
-    return sqlite3.connect(_PAPER_DB)
+    # check_same_thread=False: FastAPI's threadpool may execute different
+    # parts of a single request on different threads. Each request creates
+    # a fresh connection that lives within one request — no cross-request
+    # sharing — so disabling the same-thread guard is safe here.
+    return sqlite3.connect(_PAPER_DB, check_same_thread=False)
 
 
 @router.get("/snapshot", response_model=PaperSnapshotResponse)
@@ -40,7 +44,9 @@ def snapshot(
         run_row = conn.execute(
             "SELECT run_id, universe, starting_cash, position_size, n_long, n_short, "
             "short_threshold, started_at, first_trade_date, last_trade_date, "
-            "final_equity, final_realized_pnl, notes "
+            "final_equity, final_realized_pnl, notes, "
+            "holding_days, commission_model, stop_loss_enabled, "
+            "support_lookback_days, stop_buffer_pct "
             "FROM paper_runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -61,6 +67,11 @@ def snapshot(
             final_equity=run_row[10],
             final_realized_pnl=run_row[11],
             notes=run_row[12],
+            holding_days=run_row[13],
+            commission_model=run_row[14],
+            stop_loss_enabled=bool(run_row[15]) if run_row[15] is not None else None,
+            support_lookback_days=run_row[16],
+            stop_buffer_pct=run_row[17],
         )
 
         # Equity curve over lookback window
@@ -86,7 +97,10 @@ def snapshot(
             if date.fromisoformat(r[0]).toordinal() >= cutoff
         ]
 
-        # Latest positions (most recent trade_date)
+        # Latest positions (most recent trade_date). With overlapping-portfolio
+        # construction, the same symbol may exist across multiple lots — aggregate
+        # to a single per-symbol row for the UI: sum qty, qty-weighted avg entry,
+        # earliest entry_date (= the slice's longest-held leg).
         last_date_row = conn.execute(
             "SELECT MAX(trade_date) FROM paper_positions WHERE run_id = ?", (run_id,)
         ).fetchone()
@@ -99,32 +113,42 @@ def snapshot(
                 "FROM paper_positions WHERE run_id = ? AND trade_date = ?",
                 (run_id, last_date.isoformat()),
             ).fetchall()
-            # Look up the most-recent close per symbol from market.duckdb
-            last_close_price_by_sym = _last_close_prices(
-                [r[0] for r in position_rows], last_date
-            )
-            for r in position_rows:
-                sym = r[0]
-                side = r[1]
-                qty = r[2]
-                entry = r[3]
+            # Aggregate lots per (symbol, side). entry_price = qty-weighted avg.
+            agg: dict[tuple[str, str], dict[str, Any]] = {}
+            for sym, side, qty, entry, entry_date in position_rows:
+                key = (sym, side)
+                if key not in agg:
+                    agg[key] = {
+                        "symbol": sym, "side": side, "qty": 0.0,
+                        "cost_basis": 0.0, "earliest_entry": entry_date,
+                    }
+                bucket = agg[key]
+                bucket["qty"] += float(qty)
+                bucket["cost_basis"] += float(qty) * float(entry)
+                if entry_date < bucket["earliest_entry"]:
+                    bucket["earliest_entry"] = entry_date
+            symbols = [sym for sym, _side in agg.keys()]
+            last_close_price_by_sym = _last_close_prices(symbols, last_date)
+            for (sym, side), bucket in agg.items():
+                qty = bucket["qty"]
+                avg_entry = bucket["cost_basis"] / qty if qty > 0 else 0.0
                 last_px = last_close_price_by_sym.get(sym)
                 if last_px is None:
                     unreal = 0.0
-                    last_px_for_response = entry
+                    last_px_for_response = avg_entry
                 elif side == "long":
-                    unreal = qty * (last_px - entry)
+                    unreal = qty * (last_px - avg_entry)
                     last_px_for_response = last_px
                 else:
-                    unreal = qty * (entry - last_px)
+                    unreal = qty * (avg_entry - last_px)
                     last_px_for_response = last_px
                 positions.append(
                     PaperPosition(
                         symbol=sym,
                         side=side,
                         qty=qty,
-                        entry_price=entry,
-                        entry_date=date.fromisoformat(r[4]),
+                        entry_price=avg_entry,
+                        entry_date=date.fromisoformat(bucket["earliest_entry"]),
                         last_price=last_px_for_response,
                         unrealized_pnl=unreal,
                     )

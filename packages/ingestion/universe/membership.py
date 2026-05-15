@@ -50,7 +50,7 @@ def members_on(universe: str, as_of: str | date) -> pd.DataFrame:
 def all_symbols_ever(universe: str) -> list[str]:
     """All symbols that have ever been in this universe (for batch ingestion)."""
     from packages.ingestion.storage import get_conn
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(
             "SELECT DISTINCT symbol FROM index_membership WHERE universe = ? ORDER BY symbol",
             [universe],

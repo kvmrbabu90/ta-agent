@@ -60,18 +60,36 @@ CREATE INDEX IF NOT EXISTS membership_universe_dates
 """
 
 
-def _connect(path: str | Path | None = None) -> duckdb.DuckDBPyConnection:
+def _connect(
+    path: str | Path | None = None,
+    *,
+    read_only: bool = False,
+) -> duckdb.DuckDBPyConnection:
+    """Open the DuckDB OHLCV store. Pass read_only=True for query-only callers.
+
+    Read-only mode skips the DDL execution (CREATE TABLE IF NOT EXISTS
+    requires write access) and lets the connection coexist with readers
+    in other processes — essential for the walk-forward backtest, which
+    spends hours iterating on the same DB while the live API and the
+    scheduler may also be active.
+    """
     db_path = str(path) if path else settings.duckdb_path
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    if read_only:
+        return duckdb.connect(db_path, read_only=True)
     conn = duckdb.connect(db_path)
     conn.execute(_DDL)
     return conn
 
 
 @contextmanager
-def get_conn(path: str | Path | None = None) -> Iterator[duckdb.DuckDBPyConnection]:
+def get_conn(
+    path: str | Path | None = None,
+    *,
+    read_only: bool = False,
+) -> Iterator[duckdb.DuckDBPyConnection]:
     """Context manager for a DuckDB connection. Always use this in app code."""
-    conn = _connect(path)
+    conn = _connect(path, read_only=read_only)
     try:
         yield conn
     finally:
@@ -210,7 +228,10 @@ def get_ohlcv(
 
     own_conn = conn is None
     if own_conn:
-        conn = _connect()
+        # get_ohlcv is purely read — open in read-only mode so we can
+        # coexist with the writer pipeline (yfinance refresh, walk-forward
+        # training) without acquiring the exclusive lock.
+        conn = _connect(read_only=True)
     try:
         params: list = [symbols]
         sql = """

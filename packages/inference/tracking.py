@@ -17,8 +17,10 @@ from __future__ import annotations
 import math
 from datetime import date, datetime, timedelta
 
+import duckdb
 import pandas as pd
 
+from packages.common.config import settings
 from packages.common.logging import log
 from packages.inference.db import get_sqlite_conn
 from packages.ingestion.storage import get_conn as get_duck_conn
@@ -99,17 +101,24 @@ def _close_at_offset(
     n_trading_bars: int,
     *,
     duckdb_path: str | None = None,
+    duck_conn: "duckdb.DuckDBPyConnection | None" = None,
 ) -> tuple[float, float, date] | None:
     """Return (close_at_pred, close_at_pred_plus_horizon, realized_date) or None
     if not enough future bars exist yet.
 
     ``n_trading_bars`` counts BARS in the symbol's OHLCV series, not calendar
     days — same convention as the training labels.
+
+    Pass ``duck_conn`` to reuse one connection across many calls — important
+    when settling thousands of predictions in one go, since each fresh
+    ``duckdb.connect`` acquires a Windows file lock that races with the API
+    server's read-only opens. Calls that don't pass a connection still work
+    (opens a read-only one internally).
     """
     # Pull a generous window ahead — we need pred_date itself plus N bars.
     window_end = pred_date + timedelta(days=n_trading_bars * 2 + 21)
-    with get_duck_conn(duckdb_path) as conn:
-        df = conn.execute(
+    if duck_conn is not None:
+        df = duck_conn.execute(
             """
             SELECT bar_date, close
             FROM ohlcv_daily
@@ -118,6 +127,24 @@ def _close_at_offset(
             """,
             [symbol, pred_date, window_end],
         ).df()
+    else:
+        # Fallback path — opens a read-only connection (we only SELECT).
+        # Callers settling many predictions should pass an explicit conn.
+        import duckdb as _duckdb
+        db_path = duckdb_path or settings.duckdb_path
+        c = _duckdb.connect(db_path, read_only=True)
+        try:
+            df = c.execute(
+                """
+                SELECT bar_date, close
+                FROM ohlcv_daily
+                WHERE symbol = ? AND bar_date >= ? AND bar_date <= ?
+                ORDER BY bar_date
+                """,
+                [symbol, pred_date, window_end],
+            ).df()
+        finally:
+            c.close()
     if df.empty:
         return None
 
@@ -172,61 +199,73 @@ def settle_predictions(
     settled_groups: set[tuple[str, str]] = set()
     now = datetime.utcnow()
 
-    with get_sqlite_conn(sqlite_path) as conn:
-        for id_, universe, symbol, pred_date_str in rows:
-            pred_date = (
-                pred_date_str
-                if isinstance(pred_date_str, date)
-                else date.fromisoformat(str(pred_date_str))
-            )
-            triple = _close_at_offset(
-                symbol, pred_date, horizon_days, duckdb_path=duckdb_path
-            )
-            if triple is None:
-                continue
-            close0, close_h, _ = triple
-            if close0 <= 0 or close_h <= 0:
-                continue
-            realized = math.log(close_h / close0)
-            conn.execute(
-                """
-                UPDATE predictions_log
-                SET realized_return = ?, settled_at = ?
-                WHERE id = ?
-                """,
-                [realized, now, id_],
-            )
-            settled += 1
-            settled_groups.add((universe, pred_date.isoformat()))
-        conn.commit()
-
-        # Cross-sectional realized quintile per (universe, as_of, horizon_days).
-        for universe, pred_date_str in settled_groups:
-            grp = conn.execute(
-                """
-                SELECT id, realized_return
-                FROM predictions_log
-                WHERE universe = ? AND as_of = ? AND horizon_days = ?
-                  AND realized_return IS NOT NULL
-                """,
-                [universe, pred_date_str, horizon_days],
-            ).fetchall()
-            if len(grp) < 5:
-                continue
-            df = pd.DataFrame(grp, columns=["id", "realized_return"])
-            try:
-                df["q"] = pd.qcut(
-                    df["realized_return"], 5, labels=False, duplicates="drop"
+    # Share ONE read-only DuckDB connection across all `_close_at_offset`
+    # calls. Without this, settling N predictions opens N write-mode DuckDB
+    # connections, each acquiring the Windows file lock — every fresh open
+    # is a potential collision with the API server's reads, and on a busy
+    # day at least one inevitably loses. Read-only is correct here: we
+    # only SELECT from ohlcv_daily.
+    duck_db_path = duckdb_path or settings.duckdb_path
+    duck_conn = duckdb.connect(duck_db_path, read_only=True)
+    try:
+        with get_sqlite_conn(sqlite_path) as conn:
+            for id_, universe, symbol, pred_date_str in rows:
+                pred_date = (
+                    pred_date_str
+                    if isinstance(pred_date_str, date)
+                    else date.fromisoformat(str(pred_date_str))
                 )
-            except ValueError:
-                continue
-            df = df.dropna(subset=["q"])
-            for _id, q in zip(df["id"], df["q"], strict=True):
+                triple = _close_at_offset(
+                    symbol, pred_date, horizon_days,
+                    duckdb_path=duckdb_path, duck_conn=duck_conn,
+                )
+                if triple is None:
+                    continue
+                close0, close_h, _ = triple
+                if close0 <= 0 or close_h <= 0:
+                    continue
+                realized = math.log(close_h / close0)
                 conn.execute(
-                    "UPDATE predictions_log SET realized_quintile = ? WHERE id = ?",
-                    [int(q), int(_id)],
+                    """
+                    UPDATE predictions_log
+                    SET realized_return = ?, settled_at = ?
+                    WHERE id = ?
+                    """,
+                    [realized, now, id_],
                 )
-        conn.commit()
+                settled += 1
+                settled_groups.add((universe, pred_date.isoformat()))
+            conn.commit()
+
+            # Cross-sectional realized quintile per (universe, as_of, horizon_days).
+            for universe, pred_date_str in settled_groups:
+                grp = conn.execute(
+                    """
+                    SELECT id, realized_return
+                    FROM predictions_log
+                    WHERE universe = ? AND as_of = ? AND horizon_days = ?
+                      AND realized_return IS NOT NULL
+                    """,
+                    [universe, pred_date_str, horizon_days],
+                ).fetchall()
+                if len(grp) < 5:
+                    continue
+                df = pd.DataFrame(grp, columns=["id", "realized_return"])
+                try:
+                    df["q"] = pd.qcut(
+                        df["realized_return"], 5, labels=False, duplicates="drop"
+                    )
+                except ValueError:
+                    continue
+                df = df.dropna(subset=["q"])
+                for _id, q in zip(df["id"], df["q"], strict=True):
+                    conn.execute(
+                        "UPDATE predictions_log SET realized_quintile = ? WHERE id = ?",
+                        [int(q), int(_id)],
+                    )
+            conn.commit()
+    finally:
+        duck_conn.close()
 
     log.info(f"settle_predictions: settled={settled} groups={len(settled_groups)}")
     return settled

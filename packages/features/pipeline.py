@@ -39,6 +39,21 @@ import packages.features.earnings  # noqa: F401
 # subtraction).
 # import packages.features.sector_residual  # noqa: F401
 import packages.features.macro  # noqa: F401
+# Phase E result (3-seed CV, validate_sector_features.py, 2026-05-15):
+#   +sector mean rank-IC delta = -0.00165 (-91%)
+#   per-seed: 42:+0.01325  43:-0.01924  44:+0.00102  → worst-seed -0.01924
+#   decile spread delta = +0.00062 (+60%, NOT sign-flipped — actually
+#   the only metric that improved)
+# Same lucky-seed pattern as prior failed phases: seed 42 improved
+# dramatically (+0.013), seed 43 collapsed by -0.019. The 12 one-hot
+# sector columns add noise that interacts badly with feature_fraction
+# sampling — different seeds select different sector subsets and the
+# tree splits become regime-dependent on the seed.
+# Decile spread did improve, which suggests sector COULD help portfolio
+# construction even without raising rank-IC. Worth revisiting if we add
+# sector-aware sizing in the engine (e.g. enforce sector caps) — that
+# path would let us use sector info without burdening the predictor.
+# import packages.features.sector  # noqa: F401  # Phase E - REJECTED
 
 # Phase D2 result (3-seed cross-CV on the +A2 panel):
 #   +sec_fundamentals_v2 mean rank-IC delta = -0.00434 (-39%)
@@ -143,7 +158,7 @@ def _all_symbols_in_window(
     and Hindustan Aeronautics on NSE) from polluting per-symbol feature
     windows.
     """
-    with get_conn(duckdb_path) as conn:
+    with get_conn(duckdb_path, read_only=True) as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT symbol, exchange
@@ -162,7 +177,7 @@ def _membership_intervals(
     universe: str, *, duckdb_path: str | None = None
 ) -> pd.DataFrame:
     """All (symbol, start_date, end_date) rows for the universe."""
-    with get_conn(duckdb_path) as conn:
+    with get_conn(duckdb_path, read_only=True) as conn:
         return conn.execute(
             """
             SELECT symbol, start_date, end_date
@@ -239,13 +254,17 @@ def build_feature_matrix(
 
     per_symbol_groups = _resolve_per_symbol_groups(duckdb_path)
 
+    # Open ONE read-only connection for the whole per-symbol loop so we
+    # don't open/close 600× and risk lock conflicts with the API or any
+    # other reader/writer. Per-symbol get_ohlcv calls reuse this conn.
     rows: list[pd.DataFrame] = []
-    for sym, exch in sym_exch_pairs:
-        ohlcv = get_ohlcv(sym, start=start, end=end, exchange=exch)
-        if ohlcv.empty:
-            continue
-        feat = _per_symbol_features(sym, ohlcv, per_symbol_groups)
-        rows.append(feat)
+    with get_conn(duckdb_path, read_only=True) as shared_conn:
+        for sym, exch in sym_exch_pairs:
+            ohlcv = get_ohlcv(sym, start=start, end=end, exchange=exch, conn=shared_conn)
+            if ohlcv.empty:
+                continue
+            feat = _per_symbol_features(sym, ohlcv, per_symbol_groups)
+            rows.append(feat)
 
     if not rows:
         log.warning("build_feature_matrix: no per-symbol features computed (empty OHLCV)")

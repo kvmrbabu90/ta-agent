@@ -58,10 +58,22 @@ def init_predictions_db(path: str | Path | None = None) -> None:
 def get_sqlite_conn(
     path: str | Path | None = None,
 ) -> Iterator[sqlite3.Connection]:
-    """Connection context manager. Schema is ensured on every open."""
+    """Connection context manager. Schema is ensured on every open.
+
+    ``check_same_thread=False`` is required because FastAPI runs sync
+    dependencies and sync handlers in its threadpool — and the worker
+    thread that yields the connection is NOT guaranteed to be the same
+    one that executes the handler. Each request gets its OWN connection
+    (no sharing across requests), so the cross-thread access is safe;
+    it's purely sequential within one request's lifecycle.
+    """
     db_path = str(path) if path else settings.predictions_sqlite_path
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(
+        db_path,
+        detect_types=sqlite3.PARSE_DECLTYPES,
+        check_same_thread=False,
+    )
     try:
         conn.executescript(_PREDICTIONS_DDL)
         conn.commit()
