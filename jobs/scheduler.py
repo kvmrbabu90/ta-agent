@@ -44,6 +44,11 @@ from apscheduler.triggers.cron import CronTrigger
 
 from packages.common.logging import log
 
+# Live paper account "go-live" date — anything older is excluded so the
+# dashboard equity curve always starts at $1,000 on this date. Update to
+# re-baseline (e.g. after a strategy change worth marking fresh).
+LIVE_PAPER_START_DATE = date(2026, 5, 11)
+
 # ---------------------------------------------------------------------------
 # Job wrappers — keep imports lazy so a failing optional dependency doesn't
 # bring down scheduler startup.
@@ -104,14 +109,47 @@ def _job_spy_refresh() -> None:
     _safe_run("spy_refresh", _refresh_spy)
 
 
+def _job_news_classify() -> None:
+    """Audit-only LLM classifier over today's top long picks.
+
+    Runs after daily_predict so today's predictions exist; runs BEFORE
+    paper_backtest in the pipeline ordering, but the paper engine does
+    NOT consume verdicts yet — we accumulate paired (verdict, realized
+    5d return) data first, then decide whether to act on it.
+
+    Soft-fails: a missing Ollama process or model shouldn't break the
+    pipeline. The pipeline's other steps proceed regardless.
+    """
+    from packages.news import classify_top_picks
+    from packages.news.classifier import healthcheck
+
+    def _run() -> dict:
+        hc = healthcheck()
+        if not hc.get("ok"):
+            log.warning(f"news_classify: skipped (ollama unhealthy: {hc})")
+            return {"skipped": True, "reason": "ollama_unhealthy", **hc}
+        return classify_top_picks(universe="SP500", top_n=10)
+
+    _safe_run("news_classify", _run)
+
+
 def _job_paper_backtest() -> None:
     """Replay the model's predictions through the paper-trading engine,
-    refreshing the equity curve, open positions, and trade log."""
+    refreshing the equity curve, open positions, and trade log.
+
+    `start_date` is pinned to ``LIVE_PAPER_START_DATE`` (see module top)
+    so the live paper account starts from a known "today $1000" baseline
+    and doesn't drag in stale historical predictions. Backfilled
+    predictions (12-month window) are only used by the grid-search
+    optimizer, which runs unbounded."""
     from packages.paper_trading import StrategyConfig, backtest
 
     _safe_run(
         "paper_backtest",
-        lambda: backtest(StrategyConfig(run_id="default")),
+        lambda: backtest(StrategyConfig(
+            run_id="default",
+            start_date=LIVE_PAPER_START_DATE,
+        )),
     )
 
 
@@ -128,7 +166,12 @@ def _job_us_ct_pipeline() -> None:
     _job_spy_refresh()
     _job_daily_predict()
     _job_settlement_catchup()
+    _job_news_classify()   # audit-only LLM verdicts over today's longs
     _job_paper_backtest()
+    # Drift check fires AFTER settlement so realized_returns are fresh.
+    # It's cheap (a few SQL queries + IC compute) and has its own
+    # cooldown logic — safe to run on every pipeline tick.
+    _job_drift_check()
     log.info("[scheduler] us_ct_pipeline: complete")
 
 
@@ -154,9 +197,44 @@ def _job_settlement_catchup() -> None:
 
 
 def _job_monthly_retrain() -> None:
+    """Cheap monthly retrain — refreshes weights, reuses Optuna-tuned
+    hyperparameters from the most recent quarterly tune. ~5 min/universe."""
     from jobs.monthly_retrain import run as retrain_run
 
-    _safe_run("monthly_retrain", lambda: retrain_run())
+    _safe_run("monthly_retrain", lambda: retrain_run(do_tune=False))
+
+
+def _job_quarterly_retune() -> None:
+    """Expensive quarterly Optuna re-tune — 20 trials × ~10 min/trial =
+    ~3 hours/universe. Refreshes the hyperparameters that the monthly
+    retrains then reuse for the next 3 months."""
+    from jobs.monthly_retrain import run as retrain_run
+
+    _safe_run("quarterly_retune", lambda: retrain_run(do_tune=True, n_trials=20))
+
+
+def _job_drift_check() -> None:
+    """Daily check: if the deployed model's recent rank-IC has degraded
+    below threshold, fire an off-cycle retrain. Catches regime changes
+    between scheduled monthly retrains.
+
+    Triggers on the SP500 model only — NIFTY100 lacks enough live data."""
+    from jobs.monthly_retrain import run as retrain_run
+    from packages.inference.drift import check_drift
+
+    def _check_and_maybe_retrain() -> dict:
+        verdict = check_drift("SP500")
+        if not verdict.get("drifted"):
+            return {"drifted": False, **verdict}
+        log.warning(
+            f"drift_check: SP500 model has drifted "
+            f"(rank_ic={verdict.get('rank_ic'):.4f} over {verdict.get('n_dates')} days, "
+            f"threshold={verdict.get('threshold')}); firing emergency retrain"
+        )
+        retrain_result = retrain_run(universes=("SP500",), do_tune=False)
+        return {"drifted": True, "verdict": verdict, "retrain": retrain_result}
+
+    _safe_run("drift_check", _check_and_maybe_retrain)
 
 
 def _job_universe_refresh() -> None:
@@ -221,16 +299,47 @@ def make_scheduler() -> BlockingScheduler:
         coalesce=True,
     )
 
-    # --- Monthly retrain --------------------------------------------------
+    # --- Monthly retrain (cheap) -----------------------------------------
     # First weekday of each month at 07:00 UTC. APScheduler doesn't expose
     # a "first business day" trigger, so we widen day=1-3 + day_of_week=mon-fri,
     # which guarantees the FIRST trigger lands on the first weekday. The job
     # is idempotent within a date — cheap to fire harmlessly if it overlaps.
+    # Reuses cached Optuna hyperparameters; ~5 min/universe.
     sched.add_job(
         _job_monthly_retrain,
         CronTrigger(day="1-3", day_of_week="mon-fri", hour=7, minute=0, timezone="UTC"),
         id="monthly_retrain",
-        name="Monthly retrain (compare + promote)",
+        name="Monthly retrain (cached hyperparams)",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # --- Quarterly Optuna re-tune (expensive) ----------------------------
+    # First weekday of Jan/Apr/Jul/Oct at 09:00 UTC. Re-runs the full
+    # Optuna search to refresh hyperparameters. ~3 hours/universe; the
+    # later hour avoids overlapping with the cheap monthly job.
+    sched.add_job(
+        _job_quarterly_retune,
+        CronTrigger(
+            month="1,4,7,10", day="1-3", day_of_week="mon-fri",
+            hour=9, minute=0, timezone="UTC",
+        ),
+        id="quarterly_retune",
+        name="Quarterly Optuna re-tune (20 trials)",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # --- Daily drift check -----------------------------------------------
+    # Runs after the post-close US pipeline at 17:00 CT (= 22:00 UTC),
+    # well after settlement_catchup has updated realized_returns. If
+    # the deployed SP500 model's rank-IC over the last 20 settled days
+    # is below threshold, fires an off-cycle retrain.
+    sched.add_job(
+        _job_drift_check,
+        CronTrigger(day_of_week="mon-fri", hour=23, minute=15, timezone="UTC"),
+        id="drift_check",
+        name="Daily drift detector (rank-IC monitor)",
         max_instances=1,
         coalesce=True,
     )
@@ -245,16 +354,21 @@ def make_scheduler() -> BlockingScheduler:
         coalesce=True,
     )
 
-    # --- US CT-anchored full pipeline (8 AM + 5 PM CT) --------------------
+    # --- US CT-anchored full pipeline (8:35 AM + 5 PM CT) -----------------
     # Uses America/Chicago tz so DST is automatic. Runs the full chain on
     # each tick: yfinance OHLCV refresh -> SPY refresh -> daily_predict ->
     # settlement catch-up -> paper_trading backtest. Each step is logged
     # individually; a failure in one step doesn't abort the rest.
+    #
+    # Morning trigger sits 5 min after the equity open (08:30 CT) so
+    # yfinance has reliably published today's OPEN bar by the time the
+    # paper backtest reads it. daily_predict still builds features off
+    # yesterday's complete bar — today's intraday bar is ignored.
     sched.add_job(
         _job_us_ct_pipeline,
-        CronTrigger(day_of_week="mon-fri", hour=8, minute=0, timezone="America/Chicago"),
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=35, timezone="America/Chicago"),
         id="us_pipeline_8am_ct",
-        name="US pipeline (08:00 CT pre-market)",
+        name="US pipeline (08:35 CT post-open)",
         max_instances=1,
         coalesce=True,
     )

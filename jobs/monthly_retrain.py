@@ -229,11 +229,17 @@ def run_universe(
 def run(
     *,
     universes: tuple[str, ...] = ("SP500", "NIFTY100"),
-    do_tune: bool = True,
+    do_tune: bool = False,
     n_trials: int = _TUNE_TRIALS,
     final_train_end: date | None = None,
 ) -> dict[str, Any]:
-    """Top-level entry. Writes a retrain report under data/models/retrain_reports/."""
+    """Top-level entry. Writes a retrain report under data/models/retrain_reports/.
+
+    `do_tune` defaults to False — the monthly cadence reuses the most-recently
+    Optuna-tuned hyperparameters, retraining only the model weights against
+    fresh data. Pass do_tune=True (called from the QUARTERLY job) to re-run
+    the full Optuna search; that's expensive (~3 hours) but rare (4×/year).
+    """
     today = date.today()
     out_dir = Path(MODELS_DIR) / "retrain_reports"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -263,8 +269,55 @@ def run(
     return report
 
 
+def _is_first_business_day_of_month(today: date | None = None) -> bool:
+    """True iff today is the first Mon–Fri of its calendar month.
+
+    Used by Windows Task Scheduler invocations that fire weekly but
+    should only actually retrain on the first business day of each
+    month. (Windows lacks a native cron-style "first weekday of month"
+    trigger; the simplest correct answer is to fire weekly and gate
+    inside the wrapper.)
+    """
+    today = today or date.today()
+    if today.weekday() >= 5:  # Sat/Sun
+        return False
+    # Walk back to the start of the month, find the first weekday.
+    for d in range(1, today.day + 1):
+        candidate = date(today.year, today.month, d)
+        if candidate.weekday() < 5:
+            return candidate == today
+    return False
+
+
+def _is_first_business_day_of_quarter(today: date | None = None) -> bool:
+    today = today or date.today()
+    if today.month not in (1, 4, 7, 10):
+        return False
+    return _is_first_business_day_of_month(today)
+
+
 def main() -> int:
-    run()
+    import argparse
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--do-tune", action="store_true",
+                   help="Re-run Optuna search (expensive, ~3h/universe). "
+                        "Default: False — reuse cached hyperparameters.")
+    p.add_argument("--n-trials", type=int, default=_TUNE_TRIALS)
+    p.add_argument("--only-if-first-business-day-of-month", action="store_true",
+                   help="Bail unless today is the 1st Mon–Fri of the calendar month. "
+                        "Used by Windows Task Scheduler weekly-firing invocations.")
+    p.add_argument("--only-if-first-business-day-of-quarter", action="store_true",
+                   help="Bail unless today is the 1st Mon–Fri of Jan/Apr/Jul/Oct. "
+                        "Used by Windows Task Scheduler weekly-firing invocations.")
+    args = p.parse_args()
+    if args.only_if_first_business_day_of_quarter and not _is_first_business_day_of_quarter():
+        log.info("monthly_retrain: today is not first business day of quarter; skipping")
+        return 0
+    if args.only_if_first_business_day_of_month and not _is_first_business_day_of_month():
+        log.info("monthly_retrain: today is not first business day of month; skipping")
+        return 0
+    run(do_tune=args.do_tune, n_trials=args.n_trials)
     return 0
 
 
