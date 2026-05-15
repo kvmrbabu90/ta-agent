@@ -4,9 +4,11 @@ import { Link } from 'react-router-dom';
 import { useUniverses } from '@/hooks/useUniverses';
 import { useTopPicks } from '@/hooks/useTopPicks';
 import { useStockOhlcv } from '@/hooks/useStockOhlcv';
-import type { TopPick } from '@/api/types';
+import { useNewsVerdicts } from '@/hooks/useNewsVerdicts';
+import type { NewsVerdict, TopPick } from '@/api/types';
 import { UniverseSelector } from '@/components/UniverseSelector';
 import { Sparkline } from '@/components/Sparkline';
+import { VerdictChip } from '@/components/VerdictChip';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
@@ -84,6 +86,13 @@ export function DashboardPage() {
   // Pull a wider candidate pool so strict-mode + re-ranking has enough to work with.
   const longsQ = useTopPicks({ universe, direction: 'long', limit: CANDIDATE_LIMIT }, Boolean(universe));
   const shortsQ = useTopPicks({ universe, direction: 'short', limit: CANDIDATE_LIMIT }, Boolean(universe));
+  // LLM verdicts for today's long picks (audit-only — does not drive trading).
+  const verdictsQ = useNewsVerdicts(universe, longsQ.data?.as_of);
+  const verdictBySymbol = useMemo(() => {
+    const m = new Map<string, NewsVerdict>();
+    for (const v of verdictsQ.data?.verdicts ?? []) m.set(v.symbol, v);
+    return m;
+  }, [verdictsQ.data]);
 
   return (
     <div className="space-y-6">
@@ -117,6 +126,7 @@ export function DashboardPage() {
             isLoading={longsQ.isLoading}
             isError={longsQ.isError}
             error={longsQ.error}
+            verdictBySymbol={verdictBySymbol}
           />
           <PicksColumn
             universe={universe}
@@ -125,6 +135,7 @@ export function DashboardPage() {
             isLoading={shortsQ.isLoading}
             isError={shortsQ.isError}
             error={shortsQ.error}
+            verdictBySymbol={verdictBySymbol}
           />
         </div>
       ) : null}
@@ -133,7 +144,7 @@ export function DashboardPage() {
 }
 
 function PicksColumn({
-  universe, direction, data, isLoading, isError, error,
+  universe, direction, data, isLoading, isError, error, verdictBySymbol,
 }: {
   universe: string;
   direction: 'long' | 'short';
@@ -141,6 +152,9 @@ function PicksColumn({
   isLoading: boolean;
   isError: boolean;
   error: unknown;
+  /** LLM verdicts keyed by symbol. Same map for both columns; longs and
+   *  shorts are disjoint by sign of predicted_return so they never collide. */
+  verdictBySymbol?: Map<string, NewsVerdict>;
 }) {
   const colorClass = direction === 'long' ? 'text-emerald-400' : 'text-rose-400';
   const Icon = direction === 'long' ? TrendingUp : TrendingDown;
@@ -198,17 +212,24 @@ function PicksColumn({
 
       <div className="space-y-2">
         {ranked.map((pick) => (
-          <PickCard key={pick.symbol} pick={pick} universe={universe} direction={direction} />
+          <PickCard
+            key={pick.symbol}
+            pick={pick}
+            universe={universe}
+            direction={direction}
+            verdict={verdictBySymbol?.get(pick.symbol)}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function PickCard({ pick, universe, direction }: {
+function PickCard({ pick, universe, direction, verdict }: {
   pick: TopPick;
   universe: string;
   direction: 'long' | 'short';
+  verdict?: NewsVerdict;
 }) {
   // Pull last 30 trading days of OHLCV for the sparkline.
   const today = new Date();
@@ -260,10 +281,13 @@ function PickCard({ pick, universe, direction }: {
       ].join(' ')}
     >
       <div className="flex items-center gap-4">
-        {/* Symbol + name */}
-        <div className="min-w-[100px]">
-          <div className="font-mono text-sm font-semibold text-gray-100">
-            #{pick.rank} {pick.symbol}
+        {/* Symbol + name + LLM verdict chip */}
+        <div className="min-w-[140px]">
+          <div className="flex items-center gap-2">
+            <div className="font-mono text-sm font-semibold text-gray-100">
+              #{pick.rank} {pick.symbol}
+            </div>
+            {verdict ? <VerdictChip verdict={verdict} /> : null}
           </div>
           <div className="truncate text-xs text-gray-500" title={pick.company_name ?? ''}>
             {pick.company_name ?? '—'}

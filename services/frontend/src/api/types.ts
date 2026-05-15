@@ -121,6 +121,12 @@ export interface PaperRunSummary {
   final_equity: number | null;
   final_realized_pnl: number | null;
   notes: string | null;
+  // v2 strategy fields
+  holding_days: number | null;
+  commission_model: string | null;
+  stop_loss_enabled: boolean | null;
+  support_lookback_days: number | null;
+  stop_buffer_pct: number | null;
 }
 
 export interface PaperEquityPoint {
@@ -147,7 +153,9 @@ export interface PaperPosition {
 export interface PaperTrade {
   trade_date: string;
   symbol: string;
-  side: 'long_open' | 'long_close' | 'short_open' | 'short_close';
+  // v2 adds 'stop_close' for stop-loss exits; legacy short_* sides retained
+  // for backward compat with older rows.
+  side: 'long_open' | 'long_close' | 'stop_close' | 'short_open' | 'short_close';
   qty: number;
   fill_price: number;
   cash_delta: number;
@@ -163,6 +171,41 @@ export interface PaperSnapshotResponse {
 export interface PaperTradesResponse {
   run_id: string;
   trades: PaperTrade[];
+}
+
+// --- System status -----------------------------------------------------------
+
+export interface SystemStatusResponse {
+  last_refresh_utc: string | null;
+  latest_bar_date: string | null;
+}
+
+// --- News verdicts (LLM audit) ----------------------------------------------
+
+// Long-side verdicts: PANIC = sentiment-driven decline (keep long),
+//                     RESET = real bad news (avoid long).
+// Short-side verdicts: HYPE = sentiment-driven rally (keep short),
+//                      STRENGTH = real good news (avoid short).
+// UNCLEAR = either side, insufficient evidence.
+export type Verdict = 'PANIC' | 'RESET' | 'HYPE' | 'STRENGTH' | 'UNCLEAR';
+
+export interface NewsVerdict {
+  symbol: string;
+  verdict: Verdict;
+  confidence: number;
+  key_factors: string[];
+  evidence_sources: string[];
+  n_sources: number | null;
+  model_name: string | null;
+  trail_5d: number | null;
+  trail_20d: number | null;
+  predicted_return: number | null;
+}
+
+export interface NewsVerdictsResponse {
+  universe: string;
+  as_of: string;
+  verdicts: NewsVerdict[];
 }
 
 export interface FeatureContribution {

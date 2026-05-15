@@ -9,7 +9,15 @@ import {
   YAxis,
 } from 'recharts';
 import type { OHLCVPoint } from '@/api/types';
-import { CHART_BLUE, CHART_GRAY } from '@/utils/colors';
+import { CHART_BLUE } from '@/utils/colors';
+
+// Tailwind palette refs used below — picked for legibility on gray-900 bg.
+const GRID = '#1f2937'; // gray-800
+const TICK = '#9ca3af'; // gray-400
+const TOOLTIP_BG = 'rgba(17, 24, 39, 0.95)'; // gray-900/95
+const TOOLTIP_BORDER = '#374151'; // gray-700
+const SMA_LIGHT = '#9ca3af'; // gray-400
+const SMA_DARK = '#6b7280'; // gray-500
 
 interface PriceChartProps {
   bars: OHLCVPoint[];
@@ -49,19 +57,29 @@ export function PriceChart({ bars }: PriceChartProps) {
     <div className="h-72 w-full">
       <ResponsiveContainer>
         <LineChart data={data} margin={{ left: 8, right: 16, top: 16, bottom: 16 }}>
-          <CartesianGrid stroke="#f3f4f6" />
+          <CartesianGrid stroke={GRID} strokeDasharray="3 3" />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 11, fill: '#6b7280' }}
+            tick={{ fontSize: 11, fill: TICK }}
+            stroke={GRID}
             minTickGap={32}
           />
           <YAxis
-            tick={{ fontSize: 11, fill: '#6b7280' }}
+            tick={{ fontSize: 11, fill: TICK }}
+            stroke={GRID}
             domain={['auto', 'auto']}
             width={64}
           />
           <Tooltip
-            contentStyle={{ fontSize: 12 }}
+            contentStyle={{
+              fontSize: 12,
+              backgroundColor: TOOLTIP_BG,
+              border: `1px solid ${TOOLTIP_BORDER}`,
+              borderRadius: 6,
+              color: '#e5e7eb',
+            }}
+            labelStyle={{ color: '#d1d5db' }}
+            itemStyle={{ color: '#e5e7eb' }}
             formatter={(v: number | string) =>
               typeof v === 'number' ? v.toFixed(2) : v
             }
@@ -79,7 +97,7 @@ export function PriceChart({ bars }: PriceChartProps) {
             type="monotone"
             dataKey="sma20"
             name="SMA 20"
-            stroke={CHART_GRAY}
+            stroke={SMA_LIGHT}
             strokeWidth={1}
             dot={false}
             strokeDasharray="3 3"
@@ -89,7 +107,7 @@ export function PriceChart({ bars }: PriceChartProps) {
             type="monotone"
             dataKey="sma50"
             name="SMA 50"
-            stroke="#4b5563"
+            stroke={SMA_DARK}
             strokeWidth={1}
             dot={false}
             strokeDasharray="6 4"
@@ -100,3 +118,4 @@ export function PriceChart({ bars }: PriceChartProps) {
     </div>
   );
 }
+

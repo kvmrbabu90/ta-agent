@@ -15,6 +15,39 @@ function dollarSignedFmt(v: number, d = 2) {
   return `${v >= 0 ? '+' : ''}${dollarFmt(v, d)}`;
 }
 
+/** Render the run's actual config into prose. Falls back to the legacy
+ *  long/short description when v2 fields are absent (older paper.sqlite rows). */
+function describeStrategy(run: PaperRunSummary): string {
+  // Legacy run row — emit the v1 description so we don't lie.
+  if (run.holding_days == null) {
+    return (
+      `Long top ${run.n_long}` +
+      (run.n_short > 0
+        ? `, short bottom ${run.n_short} (when predicted < -${pctFmt(run.short_threshold, 1)})`
+        : '') +
+      `. Equal-weight ${dollarFmt(run.position_size, 0)} per position. ` +
+      `Re-rebalanced at 8am CT each trading day.`
+    );
+  }
+  // v2: overlapping portfolios + conviction weighting + stop-loss + IBKR Lite.
+  const stop = run.stop_loss_enabled
+    ? `stop-loss at ${pctFmt(run.stop_buffer_pct ?? 0, 1)} below the ${run.support_lookback_days}-day rolling low`
+    : 'no stop-loss';
+  const costs =
+    run.commission_model === 'ibkr_lite'
+      ? 'IBKR Lite costs (sells only)'
+      : run.commission_model === 'none'
+      ? 'no transaction costs'
+      : `costs: ${run.commission_model}`;
+  return (
+    `Long-only, top ${run.n_long} by conviction (predicted return × direction agreement). ` +
+    `Overlapping ${run.holding_days}-day portfolios: open a new slice each trading day, ` +
+    `force-close after ${run.holding_days} bars. Slice size = current_equity / ${run.holding_days}, ` +
+    `weighted within slice by combined score. Rebalanced at 8:35 CT (post-open). ` +
+    `${stop[0].toUpperCase()}${stop.slice(1)}; ${costs}.`
+  );
+}
+
 export function PaperTradePage() {
   const snapQ = usePaperSnapshot('default', 365);
   const tradesQ = usePaperTrades('default', 100);
@@ -35,8 +68,7 @@ export function PaperTradePage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-100">Paper Trade</h1>
           <p className="text-sm text-gray-500">
-            Strategy: long top {run.n_long}, short bottom {run.n_short} (when predicted &lt; -{pctFmt(run.short_threshold, 1)}).
-            Equal-weight {dollarFmt(run.position_size, 0)} per position. Re-rebalanced at 8am CT each trading day.
+            {describeStrategy(run)}
           </p>
         </div>
         <div className="text-right">

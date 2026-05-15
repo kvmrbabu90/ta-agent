@@ -31,21 +31,21 @@ export function StockDetailPage() {
       <div>
         <Link
           to="/"
-          className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+          className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300"
         >
           <ArrowLeft className="h-3 w-3" />
           Back to dashboard
         </Link>
       </div>
 
-      <header className="rounded border border-gray-200 bg-white p-4">
+      <header className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
         <div className="flex flex-wrap items-baseline gap-4">
-          <h1 className="text-2xl font-semibold text-gray-900 font-mono">{symbol}</h1>
+          <h1 className="text-2xl font-semibold text-gray-100 font-mono">{symbol}</h1>
           <span className="text-sm text-gray-500">{universe}</span>
           {ohlcvQ.data?.bars.length ? (
-            <span className="ml-auto text-sm text-gray-700">
+            <span className="ml-auto text-sm text-gray-300">
               <span className="text-gray-500">Last close:</span>{' '}
-              <span className="font-mono">
+              <span className="font-mono text-gray-100">
                 {ohlcvQ.data.bars[ohlcvQ.data.bars.length - 1].close.toFixed(2)}
               </span>
             </span>
@@ -61,7 +61,7 @@ export function StockDetailPage() {
             </div>
             <div>
               <span className="text-gray-500">Predicted quintile </span>
-              <span className="font-mono">{latestPred.predicted_quintile ?? '—'}</span>
+              <span className="font-mono text-gray-200">{latestPred.predicted_quintile ?? '—'}</span>
             </div>
             {latestPred.realized_return_5d !== null ? (
               <div>
@@ -125,9 +125,9 @@ function HistoryTable({ history }: { history: HistoryPoint[] }) {
   // Newest first.
   const rows = [...history].reverse();
   return (
-    <div className="overflow-hidden rounded border border-gray-200 bg-white">
-      <table className="min-w-full divide-y divide-gray-200 text-sm">
-        <thead className="bg-gray-50">
+    <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-950/40">
+      <table className="min-w-full divide-y divide-gray-800 text-sm">
+        <thead className="bg-gray-900/60">
           <tr className="text-left text-xs uppercase tracking-wide text-gray-500">
             <th className="px-3 py-2">As of</th>
             <th className="px-3 py-2 text-right">Predicted</th>
@@ -137,7 +137,7 @@ function HistoryTable({ history }: { history: HistoryPoint[] }) {
             <th className="px-3 py-2 text-center">Real. q</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-100">
+        <tbody className="divide-y divide-gray-800/60">
           {rows.map((p) => {
             const realized = p.realized_return_5d;
             const hit =
@@ -145,27 +145,27 @@ function HistoryTable({ history }: { history: HistoryPoint[] }) {
                 ? null
                 : Math.sign(p.predicted_return_5d) === Math.sign(realized);
             return (
-              <tr key={p.as_of}>
-                <td className="px-3 py-2 font-mono text-xs text-gray-600">{p.as_of}</td>
+              <tr key={p.as_of} className="hover:bg-gray-900/40">
+                <td className="px-3 py-2 font-mono text-xs text-gray-400">{p.as_of}</td>
                 <td className={`px-3 py-2 text-right font-mono ${signColor(p.predicted_return_5d)}`}>
                   {formatPercent(p.predicted_return_5d)}
                 </td>
                 <td className={`px-3 py-2 text-right font-mono ${signColor(realized)}`}>
-                  {realized === null ? <span className="text-gray-400">{formatProba(null)}</span> : formatPercent(realized)}
+                  {realized === null ? <span className="text-gray-600">{formatProba(null)}</span> : formatPercent(realized)}
                 </td>
                 <td className="px-3 py-2 text-center">
                   {hit === null ? (
-                    <span className="text-gray-300">—</span>
+                    <span className="text-gray-600">—</span>
                   ) : hit ? (
-                    <CheckCircle2 className="mx-auto h-4 w-4 text-green-600" />
+                    <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400" />
                   ) : (
-                    <XCircle className="mx-auto h-4 w-4 text-red-600" />
+                    <XCircle className="mx-auto h-4 w-4 text-rose-400" />
                   )}
                 </td>
-                <td className="px-3 py-2 text-center font-mono text-gray-700">
+                <td className="px-3 py-2 text-center font-mono text-gray-300">
                   {p.predicted_quintile ?? '—'}
                 </td>
-                <td className="px-3 py-2 text-center font-mono text-gray-700">
+                <td className="px-3 py-2 text-center font-mono text-gray-300">
                   {p.realized_quintile ?? '—'}
                 </td>
               </tr>
@@ -187,9 +187,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-2 rounded border border-gray-200 bg-white p-4">
+    <section className="space-y-2 rounded-lg border border-gray-800 bg-gray-900/60 p-4">
       <header>
-        <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+        <h2 className="text-base font-semibold text-gray-100">{title}</h2>
         <p className="text-xs text-gray-500">{subtitle}</p>
       </header>
       {children}

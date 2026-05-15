@@ -13,7 +13,7 @@ export function SettingsPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-xl font-semibold text-gray-900">Settings</h1>
+        <h1 className="text-xl font-semibold text-gray-100">Settings</h1>
         <p className="text-xs text-gray-500">
           Local-user convenience controls. The rest of the API is read-only.
         </p>
@@ -48,17 +48,17 @@ function KiteAuthSection() {
   });
 
   return (
-    <section className="rounded border border-gray-200 bg-white p-5 space-y-4">
+    <section className="rounded-lg border border-gray-800 bg-gray-900/60 p-5 space-y-4">
       <header className="flex items-start gap-3">
-        <KeyRound className="mt-0.5 h-5 w-5 text-blue-600 flex-shrink-0" />
+        <KeyRound className="mt-0.5 h-5 w-5 text-sky-400 flex-shrink-0" />
         <div>
-          <h2 className="text-base font-semibold text-gray-900">
+          <h2 className="text-base font-semibold text-gray-100">
             Kite (Zerodha) authentication
           </h2>
-          <p className="text-xs text-gray-600 mt-0.5 max-w-2xl">
-            Tokens expire daily around 6 AM IST. Click <strong>Get login URL</strong>,
-            log in in a new tab, and paste the <code className="rounded bg-gray-100 px-1 font-mono text-[11px]">request_token</code> from the redirect URL below. The
-            new token is persisted to <code className="rounded bg-gray-100 px-1 font-mono text-[11px]">data/processed/kite_session.json</code> and is picked up automatically by the next ingest / predict run — no API restart needed.
+          <p className="text-xs text-gray-400 mt-0.5 max-w-2xl">
+            Tokens expire daily around 6 AM IST. Click <strong className="text-gray-200">Get login URL</strong>,
+            log in in a new tab, and paste the <code className="rounded bg-gray-800 px-1 font-mono text-[11px] text-gray-200">request_token</code> from the redirect URL below. The
+            new token is persisted to <code className="rounded bg-gray-800 px-1 font-mono text-[11px] text-gray-200">data/processed/kite_session.json</code> and is picked up automatically by the next ingest / predict run — no API restart needed.
           </p>
         </div>
       </header>
@@ -70,7 +70,7 @@ function KiteAuthSection() {
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="inline-flex items-center gap-1 rounded-md bg-sky-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-400 disabled:opacity-50"
               onClick={() => loginUrlQ.refetch()}
               disabled={loginUrlQ.isFetching}
             >
@@ -82,7 +82,7 @@ function KiteAuthSection() {
             {loginUrlQ.data ? (
               <div className="flex items-center gap-2">
                 <a
-                  className="inline-flex items-center gap-1 text-blue-600 hover:underline text-sm"
+                  className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 hover:underline text-sm"
                   href={loginUrlQ.data.url}
                   target="_blank"
                   rel="noreferrer"
@@ -92,7 +92,7 @@ function KiteAuthSection() {
                 </a>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800/60 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
                   onClick={() => {
                     navigator.clipboard.writeText(loginUrlQ.data!.url).catch(() => {
                       /* clipboard blocked; ignore */
@@ -113,7 +113,7 @@ function KiteAuthSection() {
         >
           <p className="text-xs text-gray-500 mb-2">
             After successful login, the redirect URL contains{' '}
-            <code className="rounded bg-gray-100 px-1 font-mono text-[11px]">
+            <code className="rounded bg-gray-800 px-1 font-mono text-[11px] text-gray-200">
               ?status=success&request_token=...
             </code>
             . Copy just that value below.
@@ -131,12 +131,12 @@ function KiteAuthSection() {
               value={requestToken}
               onChange={(e) => setRequestToken(e.target.value)}
               placeholder="request_token"
-              className="font-mono text-sm rounded border border-gray-300 px-2 py-1.5 min-w-[24ch] flex-1 focus:border-blue-500 focus:outline-none"
+              className="font-mono text-sm rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 min-w-[24ch] flex-1 text-gray-100 placeholder:text-gray-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/40"
               autoComplete="off"
             />
             <button
               type="submit"
-              className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded-md bg-sky-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-400 disabled:opacity-50"
               disabled={exchangeM.isPending || !requestToken.trim()}
             >
               {exchangeM.isPending ? 'Exchanging…' : 'Authenticate'}
@@ -148,7 +148,7 @@ function KiteAuthSection() {
             </div>
           ) : null}
           {exchangeM.data ? (
-            <div className="mt-2 flex items-center gap-2 text-sm text-green-700">
+            <div className="mt-2 flex items-center gap-2 text-sm text-emerald-400">
               <CheckCircle2 className="h-4 w-4" />
               Authenticated as <span className="font-mono">{exchangeM.data.user_id}</span>
               {exchangeM.data.user_name ? ` (${exchangeM.data.user_name})` : null}.
@@ -173,18 +173,18 @@ function KiteStatus({
   const s = statusQ.data!;
   const ok = s.has_token_env || s.has_token_file;
   return (
-    <div className="rounded border border-gray-200 bg-gray-50 p-3 text-sm">
+    <div className="rounded-md border border-gray-800 bg-gray-950/40 p-3 text-sm">
       <div className="flex items-center gap-2">
         {ok ? (
-          <CheckCircle2 className="h-4 w-4 text-green-600" />
+          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
         ) : (
-          <XCircle className="h-4 w-4 text-red-500" />
+          <XCircle className="h-4 w-4 text-rose-400" />
         )}
-        <span className="font-medium text-gray-800">
+        <span className="font-medium text-gray-200">
           {ok ? 'Authenticated' : 'No active Kite token'}
         </span>
       </div>
-      <dl className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2 text-xs text-gray-600">
+      <dl className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2 text-xs text-gray-400">
         <Row label="API key configured" value={s.configured_api_key ? 'yes' : 'no'} />
         <Row label="Token from env" value={s.has_token_env ? 'yes' : 'no'} />
         <Row label="Token from file" value={s.has_token_file ? 'yes' : 'no'} />
@@ -194,7 +194,7 @@ function KiteStatus({
         ) : null}
       </dl>
       {s.file_error ? (
-        <div className="mt-2 text-xs text-red-600">file error: {s.file_error}</div>
+        <div className="mt-2 text-xs text-rose-400">file error: {s.file_error}</div>
       ) : null}
     </div>
   );
@@ -204,7 +204,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-4">
       <span className="text-gray-500">{label}</span>
-      <span className="font-mono">{value}</span>
+      <span className="font-mono text-gray-200">{value}</span>
     </div>
   );
 }
@@ -219,9 +219,9 @@ function Step({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded border border-gray-200 p-3">
+    <div className="rounded-md border border-gray-800 bg-gray-950/30 p-3">
       <div className="text-xs uppercase tracking-wide text-gray-500">Step {n}</div>
-      <div className="text-sm font-medium text-gray-800 mt-0.5">{label}</div>
+      <div className="text-sm font-medium text-gray-200 mt-0.5">{label}</div>
       <div className="mt-2">{children}</div>
     </div>
   );

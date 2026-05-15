@@ -10,6 +10,12 @@ import {
 import type { FeatureContribution } from '@/api/types';
 import { CHART_GREEN, CHART_RED } from '@/utils/colors';
 
+// Tailwind palette refs used below — picked for legibility on gray-900 bg.
+const TICK = '#9ca3af'; // gray-400
+const GRID = '#1f2937'; // gray-800
+const TOOLTIP_BG = 'rgba(17, 24, 39, 0.95)'; // gray-900/95
+const TOOLTIP_BORDER = '#374151'; // gray-700
+
 interface ShapBarChartProps {
   contributions: FeatureContribution[];
 }
@@ -40,17 +46,28 @@ export function ShapBarChart({ contributions }: ShapBarChartProps) {
         >
           <XAxis
             type="number"
-            tick={{ fontSize: 11, fill: '#6b7280' }}
+            tick={{ fontSize: 11, fill: TICK }}
+            stroke={GRID}
             tickFormatter={(v: number) => v.toFixed(3)}
           />
           <YAxis
             type="category"
             dataKey="feature"
-            tick={{ fontSize: 11, fill: '#374151' }}
+            tick={{ fontSize: 11, fill: TICK }}
+            stroke={GRID}
             width={180}
           />
           <Tooltip
-            contentStyle={{ fontSize: 12 }}
+            cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+            contentStyle={{
+              fontSize: 12,
+              backgroundColor: TOOLTIP_BG,
+              border: `1px solid ${TOOLTIP_BORDER}`,
+              borderRadius: 6,
+              color: '#e5e7eb',
+            }}
+            labelStyle={{ color: '#d1d5db' }}
+            itemStyle={{ color: '#e5e7eb' }}
             formatter={(v: number | string, key: string, item) => {
               if (key === 'shap' && typeof v === 'number') {
                 const fv = (item?.payload as { featureValue: number | null } | undefined)?.featureValue;
