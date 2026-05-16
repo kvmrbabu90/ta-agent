@@ -251,6 +251,38 @@ class StrategyConfig:
     # packages/paper_trading/regime.py for thresholds and rationale.
     regime_gate_enabled: bool = True
 
+    # Leverage / margin. `leverage_multiplier` scales the slice budget,
+    # so each lot is sized at (equity × leverage / holding_days) instead
+    # of (equity / holding_days). At leverage=2.0 the engine deploys 2×
+    # gross exposure; cash goes negative as we open positions worth more
+    # than we have. `margin_apr` is the annual interest rate charged on
+    # any negative cash balance — IBKR Pro tiered rates as of 2026 are
+    # roughly 5.5-7.5% depending on debit size; 6.5% is a defensible
+    # midpoint. The interest accrues daily at margin_apr/252 and is
+    # absorbed into realized_pnl so the equity curve reflects the true
+    # after-margin economics.
+    #
+    # Validation 2026-05-16 on honest WF (with FVG filter, 24 months):
+    #   leverage   Sharpe   Final $1k -> ?   MaxDD   % days w/ debit
+    #   1.0×       2.810    $1,757           3.2%     0%
+    #   1.25×      2.817    $2,016           4.0%     2%
+    #   1.5×       2.821    $2,307           4.8%     5%
+    #   2.0×       2.819    $2,997           6.4%    14%
+    #   3.0×       2.801    $4,905           9.5%    33%
+    #
+    # Sharpe is invariant to leverage (as theory predicts). Returns and
+    # drawdown scale linearly. Default kept at 1.0× to preserve current
+    # live behavior; turn up after 4-8 weeks of live paper confirms the
+    # backtest. 2.0× is the sweet spot — beats the pre-FVG baseline
+    # ($2,694 / 9.6% DD) on every dimension.
+    #
+    # IMPORTANT: leverage amplifies whatever Sharpe the underlying
+    # strategy has. Levering up a low-Sharpe strategy is the fastest
+    # way to blow up an account. Only crank this for strategies with
+    # validated honest Sharpe > 2.
+    leverage_multiplier: float = 1.0
+    margin_apr: float = 0.065
+
     # Pre-trade Fair Value Gap filter. When enabled, only takes a long
     # pick if there's an unfilled bullish FVG below entry within
     # `fvg_lookback_days` trading days AND within `fvg_max_distance_pct`
@@ -776,7 +808,15 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
             regime_mult = 1.0
             if regime_gate is not None:
                 regime_mult = regime_gate.multiplier_for(d)
-            slice_budget = max(0.0, equity_8am / cfg.holding_days) * regime_mult
+            # Slice budget scales with leverage_multiplier. At leverage=2 we
+            # deploy 2× equity worth of gross exposure across the overlapping
+            # slices; cash goes negative which the margin-interest path below
+            # then charges interest on each day at the 5pm mark.
+            slice_budget = (
+                max(0.0, equity_8am / cfg.holding_days)
+                * regime_mult
+                * cfg.leverage_multiplier
+            )
             if not top_longs.empty and slice_budget > 0:
                 # If vol_scaling is on, weights = combined_score / ATR per
                 # name. Names with bigger ATR get less capital — equal-risk
@@ -889,7 +929,19 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
                         survivors.append(lot)
                 open_lots = survivors
 
-            # 6) 5 PM CT mark — using today's CLOSE for survivors.
+            # 6) Margin interest. If we're carrying a debit balance (cash
+            # negative because positions are sized via leverage_multiplier > 1),
+            # accrue daily interest at margin_apr / 252. Treats the debit as
+            # held overnight from the open of THIS day to the open of next.
+            # For leverage=1.0 cash should never go negative and this is a
+            # no-op. Realized P&L absorbs the interest cost so the equity
+            # curve and Sharpe reflect the true after-margin economics.
+            if cash < 0 and cfg.margin_apr > 0:
+                daily_interest = cash * (cfg.margin_apr / 252.0)  # negative number
+                cash += daily_interest
+                realized_pnl += daily_interest
+
+            # 7) 5 PM CT mark — using today's CLOSE for survivors.
             long_mv_close, unreal_close = _mark_lots(open_lots, bars, d, "close")
             equity_5pm = cash + long_mv_close
             paper_conn.execute(
