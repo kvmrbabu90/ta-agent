@@ -50,7 +50,9 @@ from packages.inference.predict import (
 from packages.inference.tracking import log_predictions
 from packages.labels.dataset import build_training_dataset
 from packages.modeling.calibrate import calibrate_classifier
+from packages.modeling.splits import PurgedWalkForwardSplit
 from packages.modeling.train import TrainConfig, train_final_model
+from packages.modeling.tune import tune_hyperparameters
 
 _DEFAULT_HORIZON = 5
 _EMBARGO_DAYS = 5  # match horizon — labels needing future >5d are excluded
@@ -152,6 +154,49 @@ def _retry_on_lock(fn, *, attempts: int = 6, delay_s: float = 5.0):
     raise last_exc  # pragma: no cover
 
 
+def _maybe_tune_at_retrain(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    label_col: str,
+    base_cfg: TrainConfig,
+    *,
+    enabled: bool,
+    n_trials: int,
+    n_folds: int,
+    horizon_days: int,
+    embargo_days: int,
+    optuna_n_jobs: int,
+    study_name: str,
+) -> TrainConfig:
+    """If per-retrain Optuna is enabled, run a tune restricted to ``df``
+    (which only contains data up to the retrain's train_end). The returned
+    config is used to fit the final model for THIS retrain only.
+
+    The TPE sampler is reseeded per retrain so optimization is deterministic
+    given the data; otherwise the legacy behavior of borrowing production
+    hyperparameters is preserved.
+    """
+    if not enabled:
+        return base_cfg
+
+    splitter = PurgedWalkForwardSplit(
+        n_folds=n_folds,
+        horizon_days=horizon_days,
+        embargo_days=embargo_days,
+        min_train_size_days=504,
+    )
+    best_cfg, _study = tune_hyperparameters(
+        df, feature_cols, label_col, splitter, base_cfg,
+        n_trials=n_trials,
+        timeout_seconds=None,  # let n_trials drive — don't truncate
+        study_name=study_name,
+        constraints=None,  # constraint thresholds vary by dataset size
+        seeds=None,
+        n_jobs=optuna_n_jobs,
+    )
+    return best_cfg
+
+
 def _train_models_through(
     universe: str,
     final_train_end: date,
@@ -159,9 +204,21 @@ def _train_models_through(
     horizon_days: int,
     reg_cfg: TrainConfig,
     cls_cfg: TrainConfig,
-) -> tuple[Any, Any, list[str]]:
+    per_retrain_optuna: bool = False,
+    optuna_trials: int = 20,
+    optuna_n_jobs: int = 1,
+) -> tuple[Any, Any, list[str], TrainConfig, TrainConfig]:
     """Train regression + (calibrated) classification models on data
-    through `final_train_end`. Returns (reg_model, cls_model, feature_cols).
+    through `final_train_end`.
+
+    When ``per_retrain_optuna=True``, hyperparameters are re-tuned via
+    Optuna on the training slice BEFORE the final model is fit — this
+    eliminates the hyperparameter-look-ahead bias that comes from
+    borrowing production-model params (which were tuned on the full
+    2010-2026 dataset). The cost is a 5-30× slowdown per retrain depending
+    on dataset size and trial count.
+
+    Returns (reg_model, cls_model, feature_cols, reg_cfg_used, cls_cfg_used).
     """
     train_start = final_train_end - timedelta(days=_TRAIN_LOOKBACK_DAYS)
     df = build_training_dataset(
@@ -177,13 +234,36 @@ def _train_models_through(
     }
     feature_cols = [c for c in df.columns if c not in non_feature]
 
+    # Per-retrain Optuna tune (look-ahead-free): restricts the search to
+    # data already in `df`, which is bounded by `final_train_end`.
+    reg_cfg_used = _maybe_tune_at_retrain(
+        df, feature_cols, f"fwd_return_{horizon_days}d", reg_cfg,
+        enabled=per_retrain_optuna,
+        n_trials=optuna_trials,
+        n_folds=5,
+        horizon_days=horizon_days,
+        embargo_days=_EMBARGO_DAYS,
+        optuna_n_jobs=optuna_n_jobs,
+        study_name=f"wf_{universe}_reg_{final_train_end.isoformat()}",
+    )
+    cls_cfg_used = _maybe_tune_at_retrain(
+        df, feature_cols, f"fwd_quintile_{horizon_days}d", cls_cfg,
+        enabled=per_retrain_optuna,
+        n_trials=optuna_trials,
+        n_folds=5,
+        horizon_days=horizon_days,
+        embargo_days=_EMBARGO_DAYS,
+        optuna_n_jobs=optuna_n_jobs,
+        study_name=f"wf_{universe}_cls_{final_train_end.isoformat()}",
+    )
+
     reg_booster, _ = train_final_model(
         df, feature_cols,
-        f"fwd_return_{horizon_days}d", reg_cfg, final_train_end,
+        f"fwd_return_{horizon_days}d", reg_cfg_used, final_train_end,
     )
     cls_booster, _ = train_final_model(
         df, feature_cols,
-        f"fwd_quintile_{horizon_days}d", cls_cfg, final_train_end,
+        f"fwd_quintile_{horizon_days}d", cls_cfg_used, final_train_end,
     )
     # Calibrate classifier on the most recent labeled slice — matches the
     # monthly_retrain.py logic so probabilities are comparable.
@@ -203,7 +283,7 @@ def _train_models_through(
         cls_model = calibrate_classifier(cls_booster, X_cal, y_cal)
     else:
         cls_model = cls_booster
-    return reg_booster, cls_model, feature_cols
+    return reg_booster, cls_model, feature_cols, reg_cfg_used, cls_cfg_used
 
 
 def _predict_window(
@@ -296,6 +376,10 @@ def run_walkforward(
     out_dir: Path = _WF_DIR,
     hyperparams_from: str | None = None,
     calendar: str | None = None,
+    per_retrain_optuna: bool = False,
+    optuna_trials: int = 20,
+    optuna_n_jobs: int = 1,
+    device: str = "cpu",
 ) -> dict:
     """Top-level entry. Returns a summary dict; report.json is written too."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -312,12 +396,18 @@ def run_walkforward(
     log.info(
         f"walkforward: universe={universe} window={start}..{end} "
         f"calendar={cal} hyperparams_from={hyperparams_from or universe} "
-        f"out={out_dir}"
+        f"per_retrain_optuna={per_retrain_optuna} optuna_trials={optuna_trials} "
+        f"device={device} out={out_dir}"
     )
     reg_cfg, cls_cfg = _load_configs_for(universe, hyperparams_from=hyperparams_from)
+    # Apply GPU / threading override across both targets.
+    from dataclasses import replace as _replace
+    reg_cfg = _replace(reg_cfg, device=device)
+    cls_cfg = _replace(cls_cfg, device=device)
     log.info(
         f"walkforward: reg_lr={reg_cfg.learning_rate:.4f} "
-        f"reg_leaves={reg_cfg.num_leaves} cls_lr={cls_cfg.learning_rate:.4f}"
+        f"reg_leaves={reg_cfg.num_leaves} cls_lr={cls_cfg.learning_rate:.4f} "
+        f"device={reg_cfg.device}"
     )
 
     retrain_dates = _retrain_dates(start, end, calendar=cal)
@@ -348,11 +438,14 @@ def run_walkforward(
             continue
         t_retrain = time.monotonic()
         try:
-            reg_model, cls_model, feature_cols = _retry_on_lock(
+            reg_model, cls_model, feature_cols, reg_cfg_used, cls_cfg_used = _retry_on_lock(
                 lambda: _train_models_through(
                     universe, train_end,
                     horizon_days=horizon_days,
                     reg_cfg=reg_cfg, cls_cfg=cls_cfg,
+                    per_retrain_optuna=per_retrain_optuna,
+                    optuna_trials=optuna_trials,
+                    optuna_n_jobs=optuna_n_jobs,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -393,6 +486,24 @@ def run_walkforward(
             "n_predictions_logged": n_rows,
             "train_seconds": round(train_seconds, 1),
             "predict_seconds": round(predict_seconds, 1),
+            "reg_hyperparams": {
+                "learning_rate": reg_cfg_used.learning_rate,
+                "num_leaves": reg_cfg_used.num_leaves,
+                "min_data_in_leaf": reg_cfg_used.min_data_in_leaf,
+                "feature_fraction": reg_cfg_used.feature_fraction,
+                "bagging_fraction": reg_cfg_used.bagging_fraction,
+                "lambda_l1": reg_cfg_used.lambda_l1,
+                "lambda_l2": reg_cfg_used.lambda_l2,
+            },
+            "cls_hyperparams": {
+                "learning_rate": cls_cfg_used.learning_rate,
+                "num_leaves": cls_cfg_used.num_leaves,
+                "min_data_in_leaf": cls_cfg_used.min_data_in_leaf,
+                "feature_fraction": cls_cfg_used.feature_fraction,
+                "bagging_fraction": cls_cfg_used.bagging_fraction,
+                "lambda_l1": cls_cfg_used.lambda_l1,
+                "lambda_l2": cls_cfg_used.lambda_l2,
+            },
         })
 
     elapsed = time.monotonic() - t_start_total
@@ -448,6 +559,27 @@ def main() -> int:
         help="pandas_market_calendars name (NYSE, XNSE, etc.). "
              "Auto-selected from universe if not set.",
     )
+    p.add_argument(
+        "--per-retrain-optuna", action="store_true",
+        help="Run Optuna at every retrain on data up to that retrain's "
+             "train_end. ELIMINATES hyperparameter look-ahead bias (no "
+             "params borrowed from a production model tuned on the full "
+             "history). Much slower (~5-30x).",
+    )
+    p.add_argument(
+        "--optuna-trials", type=int, default=20,
+        help="Number of Optuna trials per retrain per target when "
+             "--per-retrain-optuna is set. Default 20.",
+    )
+    p.add_argument(
+        "--optuna-n-jobs", type=int, default=1,
+        help="Parallel Optuna trials per retrain. >1 with GPU may contend "
+             "for the device; with CPU LightGBM you can usually go 4-8.",
+    )
+    p.add_argument(
+        "--device", choices=["cpu", "gpu"], default="cpu",
+        help="LightGBM device. 'gpu' requires a GPU-enabled LightGBM build.",
+    )
     args = p.parse_args()
     end = args.end or (date.today() - timedelta(days=1))
     start = args.start or (end - timedelta(days=365 * 2))
@@ -457,6 +589,10 @@ def main() -> int:
             horizon_days=args.horizon_days, out_dir=args.out_dir,
             hyperparams_from=args.hyperparams_from,
             calendar=args.calendar,
+            per_retrain_optuna=args.per_retrain_optuna,
+            optuna_trials=args.optuna_trials,
+            optuna_n_jobs=args.optuna_n_jobs,
+            device=args.device,
         )
     except Exception:  # noqa: BLE001
         log.error(f"walkforward crashed: {traceback.format_exc()}")

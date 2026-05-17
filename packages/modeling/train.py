@@ -44,6 +44,11 @@ class TrainConfig:
     verbose: int = -1
     is_unbalance: bool = False  # classification only
 
+    # Compute knobs. device='cpu' is the safe default; 'gpu' requires a
+    # LightGBM build with OpenCL/CUDA support (checked at module import).
+    device: Literal["cpu", "gpu"] = "cpu"
+    num_threads: int = 0  # 0 = use all cores; LightGBM honors this
+
 
 def _to_lgb_params(cfg: TrainConfig) -> dict[str, Any]:
     common = {
@@ -57,7 +62,14 @@ def _to_lgb_params(cfg: TrainConfig) -> dict[str, Any]:
         "lambda_l2": cfg.lambda_l2,
         "seed": cfg.seed,
         "verbose": cfg.verbose,
+        "device": cfg.device,
+        "num_threads": cfg.num_threads,
     }
+    # GPU mode benefits from explicit bin count; LightGBM default 255 is fine
+    # but smaller bins train faster on GPU at small accuracy cost.
+    if cfg.device == "gpu":
+        common["gpu_use_dp"] = False  # single-precision is plenty
+        common["max_bin"] = 255
     if cfg.objective == "regression":
         return {**common, "objective": "regression", "metric": "l2"}
     if cfg.objective == "classification":

@@ -149,6 +149,7 @@ def tune_hyperparameters(
     storage_path: str | None = None,
     constraints: TuneConstraints | None = None,
     seeds: tuple[int, ...] | None = None,
+    n_jobs: int = 1,
 ) -> tuple[TrainConfig, optuna.Study]:
     """Run Optuna search; return (best_config, study).
 
@@ -215,7 +216,13 @@ def tune_hyperparameters(
         storage=storage,
         load_if_exists=storage is not None,
     )
-    study.optimize(_objective, n_trials=n_trials, timeout=timeout_seconds, gc_after_trial=True)
+    study.optimize(
+        _objective,
+        n_trials=n_trials,
+        timeout=timeout_seconds,
+        gc_after_trial=True,
+        n_jobs=n_jobs,
+    )
 
     if not np.isfinite(study.best_value):
         log.warning("Optuna found no finite-objective trial; returning base_config unchanged")
