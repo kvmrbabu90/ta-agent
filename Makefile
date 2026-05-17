@@ -10,6 +10,8 @@ UNIVERSE ?= SP500
         scheduler retrain refresh-universes refresh-macro \
         clean
 
+.PHONY: help setup test lint ruff-fix ingest predict train health api frontend frontend-build scheduler retrain refresh-universes refresh-macro clean worktree-remove
+
 help:
 	@echo "Targets:"
 	@echo "  setup             Create .venv (uv) and install deps"
@@ -27,6 +29,7 @@ help:
 	@echo "  retrain           python -m jobs.monthly_retrain"
 	@echo "  refresh-universes python -m scripts.refresh_universes"
 	@echo "  refresh-macro     python -m scripts.refresh_macro"
+	@echo "  worktree-remove   Safely remove a git worktree (use WT=path; safe for junctions)"
 
 setup:
 	uv venv --python 3.11
@@ -80,3 +83,14 @@ refresh-macro:
 clean:
 	@echo "(this leaves data/ and models/ untouched)"
 	rm -rf .pytest_cache .ruff_cache .mypy_cache services/frontend/dist services/frontend/.vite
+
+# Safe worktree removal on Windows. DO NOT use `git worktree remove` directly
+# if the worktree contains junctions back into the main tree (e.g. a `data/`
+# junction so the worktree can share OHLCV with main). Git's recursive delete
+# follows junctions and will wipe the TARGET. This wrapper deletes junctions
+# first (without following) before calling git worktree remove.
+#
+#   make worktree-remove WT=../ta-agent-india-phase-a
+worktree-remove:
+	@if [ -z "$(WT)" ]; then echo "Usage: make worktree-remove WT=<path>"; exit 1; fi
+	powershell.exe -ExecutionPolicy Bypass -File scripts/safe_worktree_remove.ps1 "$(WT)"

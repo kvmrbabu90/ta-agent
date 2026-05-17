@@ -1,7 +1,16 @@
 # ta-agent handoff
 
-**Last updated:** 2026-05-16
+**Last updated:** 2026-05-17
 **Branch:** `main`
+
+> **🚨 OPERATIONAL WARNING — git worktrees + `data/` junction.** If you
+> create a git worktree that contains a directory junction back into the
+> main tree (commonly `data/` so the worktree shares OHLCV with main),
+> NEVER call `git worktree remove` directly. Git's recursive delete on
+> Windows follows junctions and deletes the TARGET's contents — wiping
+> out the main tree's `data/`. Use `make worktree-remove WT=<path>`
+> which removes junctions first (without following them) before calling
+> git worktree remove. See `scripts/safe_worktree_remove.ps1`.
 
 This is the operational snapshot of the project — what's running, what
 changed recently, and what to look at next. For project background read
