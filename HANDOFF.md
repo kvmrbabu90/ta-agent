@@ -129,7 +129,7 @@ distance).
 |---|---|---|---|
 | Final after-tax on $1,000 | **$24,011** | $3,479 | **6.9×** |
 
-Chart: `data/processed/tax_adjusted_comparison.png` — equity curves
+Chart: `docs/tax_adjusted_comparison.png` — equity curves
 side-by-side with outperformance ratio in lower panel.
 
 **Look-ahead-biased backtest** (single-model, same 11-year window): final

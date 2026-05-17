@@ -42,7 +42,7 @@ PURE_ML_RUN_ID = "a_0_0_1"  # pure ML config from analyze_10yr_walkforward.py
 STRATEGY_TAX_RATE = 0.25  # 25% blended STCG
 SPY_LTCG_RATE = 0.15
 
-OUT_PNG = "data/processed/tax_adjusted_comparison.png"
+OUT_PNG = "docs/tax_adjusted_comparison.png"  # docs/ is git-tracked; data/processed is gitignored
 
 
 def strategy_per_year_returns() -> pd.DataFrame:
