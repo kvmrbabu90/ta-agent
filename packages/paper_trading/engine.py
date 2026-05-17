@@ -246,10 +246,24 @@ class StrategyConfig:
     #               Drawdown improvement is the bigger deal.
     vol_scaling: str = "inverse"
 
-    # Regime gate. Scales the slice budget down when SPY is far from its
-    # 50-day SMA (mean-reversion fails in strong-trend regimes). See
-    # packages/paper_trading/regime.py for thresholds and rationale.
-    regime_gate_enabled: bool = True
+    # Regime gate. Scales the slice budget down in detected stress regimes.
+    # `regime_version` selects the implementation:
+    #   1 — SPY 50-day SMA z-score (packages/paper_trading/regime.py).
+    #       Empirically blind to slow bears like 2022.
+    #   2 — multi-indicator composite (packages/paper_trading/regime_v2.py):
+    #       drawdown_from_52w_peak + SPY<SMA200 + VIX>=25.
+    #       Validated 2026-05-16 to fire correctly on 2018-Q4, 2020-Q1, 2022.
+    #
+    # DEFAULT: DISABLED. The 10-year walk-forward (2014-2024, 132 retrains,
+    # 1.1M predictions, 2026-05-16) showed that BOTH v1 and v2 add ZERO
+    # value across the full historical dataset. The strategy is genuinely
+    # regime-agnostic — it works in slow bull (2014-15), low-vol bull
+    # (2017), bear (2018-Q4, 2022), violent crash (2020), bubble (2021)
+    # and post-2022 recovery (2023-24). The regime gate was solving a
+    # problem that doesn't exist for THIS strategy. Code kept for future
+    # use (e.g. different strategy that actually needs regime defense).
+    regime_gate_enabled: bool = False
+    regime_version: int = 2
 
     # Leverage / margin. `leverage_multiplier` scales the slice budget,
     # so each lot is sized at (equity × leverage / holding_days) instead
@@ -290,16 +304,23 @@ class StrategyConfig:
     # bounces are higher-probability when there's structural support
     # (an unfilled gap representing latent institutional demand) underneath.
     #
-    # Validation 2026-05-16 on honest WF data:
-    #   baseline (no filter):  Sharpe 2.16  final $2,694  MaxDD 9.6%   4942 trades
-    #   20d/20% (default):     Sharpe 2.81  final $1,757  MaxDD 3.2%   1574 trades
-    #   5d/5% (most strict):   Sharpe 2.99  final $1,430  MaxDD 1.5%    761 trades
+    # DEFAULT: DISABLED.
+    # Initial validation 2026-05-16 on 24-month WF (2024-2026) showed:
+    #   Sharpe 2.16→2.81, MaxDD 9.6%→3.2%, looked like a clear win.
     #
-    # All variants tested clear the ship gate (Sharpe up, MaxDD better).
-    # 20d/20% picked as default — best balance of Sharpe lift + absolute
-    # return + trade-volume statistical significance. Override to None or
-    # tighter for different risk preferences.
-    fvg_filter_enabled: bool = True
+    # 10-year walk-forward (2014-2024, 132 retrains, 1.1M predictions,
+    # 2026-05-16) overturned this completely:
+    #   Pure ML (no FVG):      Sharpe 1.78, Final $59,303, MaxDD 28.4%
+    #   + FVG (20d/20%):       Sharpe 1.77, Final  $5,151, MaxDD  9.8%
+    #
+    # The FVG filter cuts returns by 91% on the full history. The 2024-26
+    # "improvement" was specific to a benign-bull regime; on the full
+    # 11-year history, FVG strips out 50-69pp of return in years like
+    # 2020 (+105%→+36%), 2017 (+39%→+10%), 2021 (+66%→+17%).
+    #
+    # Kept as opt-in for users who want a much smoother equity curve
+    # at significant return cost.
+    fvg_filter_enabled: bool = False
     fvg_lookback_days: int = 20
     fvg_max_distance_pct: float = 0.20
 
@@ -729,11 +750,18 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
         log.error("paper backtest: no OHLCV for any prediction symbol; aborting")
         return {"run_id": cfg.run_id, "n_trade_days": 0, "final_equity": cfg.starting_cash}
 
-    # Build the regime gate once (loads ~1y of SPY closes). When disabled
-    # we use a no-op stub so the inner loop stays branch-free.
+    # Build the regime gate once. Two implementations available; v1 is the
+    # current default (SPY-50-SMA z-score; blind to slow bears), v2 is the
+    # multi-indicator composite (drawdown + SMA-200 + VIX) that catches
+    # slow bears like 2022. Both expose the same `multiplier_for(date)`
+    # interface so the inner loop is identical.
     if cfg.regime_gate_enabled:
-        from packages.paper_trading.regime import RegimeGate
-        regime_gate = RegimeGate(as_of_max=trade_dates[-1])
+        if cfg.regime_version == 2:
+            from packages.paper_trading.regime_v2 import RegimeGateV2
+            regime_gate = RegimeGateV2(as_of_max=trade_dates[-1])
+        else:
+            from packages.paper_trading.regime import RegimeGate
+            regime_gate = RegimeGate(as_of_max=trade_dates[-1])
     else:
         regime_gate = None
 

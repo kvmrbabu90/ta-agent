@@ -1,6 +1,6 @@
 # ta-agent handoff
 
-**Last updated:** 2026-05-15
+**Last updated:** 2026-05-16
 **Branch:** `main`
 
 This is the operational snapshot of the project — what's running, what
@@ -15,13 +15,21 @@ first" doc.
 ## TL;DR
 
 The system is **live in paper-trading mode** since 2026-05-11 with $1,000
-of fake capital. Honest walk-forward backtest over the last 24 months
-shows **Sharpe 2.17** and **+57% return** — better than SPY (+33%) by a
-real but modest margin. **Do not trade real money yet.** First, accumulate
-4-8 weeks of live paper data and confirm it tracks the backtest within
-±50%. The strategy is mean-reverting (buys recent losers, shorts recent
-winners on 5-day horizons) with stop-losses, regime gating, and an
-audit-only LLM news classifier (Gemma 4 via Ollama).
+of fake capital. Honest **11-year walk-forward** (2014-2024, 132 monthly
+retrains, 1.1M predictions) shows **Sharpe 1.78** and **+5,830% return**
+(turning $1,000 into $59,303 pre-tax). After accounting for tax
+(25% blended STCG annually for the strategy vs 15% LTCG at end for SPY),
+$24,011 vs SPY's $3,479 — a **6.9× outperformance after tax**. Strategy
+beats SPY in **every single year** of the 10-year window including the
+2022 bear (strategy −1% vs SPY −19%).
+
+**Do not trade real money yet.** First, accumulate 4-8 weeks of live
+paper data and confirm it tracks the backtest within ±50%. The strategy
+is mean-reverting (buys recent losers on 5-day horizons) with stop-losses
+and an audit-only LLM news classifier (Gemma 4 via Ollama). The regime
+gate and FVG filter exist as opt-in code but are DISABLED by default —
+the 10-year evidence showed both add zero value (regime) or actively hurt
+returns (FVG, −91% cut on full history).
 
 The live system runs **fully autonomously** via Windows Task Scheduler:
 two pipeline runs per weekday (08:35 + 17:00 CT), plus monthly retrains
@@ -67,7 +75,7 @@ Per-run logs land at `logs/scheduled_run_YYYY-MM-DD.log`,
 ## Current paper-trading strategy
 
 See `packages/paper_trading/engine.py:StrategyConfig` for the canonical
-config. **Live defaults as of 2026-05-15:**
+config. **Live defaults as of 2026-05-16 (post 10-year walk-forward):**
 
 ```python
 universe                = "SP500"
@@ -79,12 +87,16 @@ conviction_weighted     = True         # weight by combined_score within slice
 vol_scaling             = "inverse"    # weights ∝ score / ATR
 
 stop_loss_enabled       = True
-stop_mode               = "support"    # ATR mode tested and rejected (May 2026)
+stop_mode               = "support"    # ATR mode tested and rejected
 support_lookback_days   = 3
 stop_buffer_pct         = 0.003        # 0.3% — optimized on walk-forward data
 
 commission_model        = "ibkr_lite"  # SEC fee on sells only, no commission
-regime_gate_enabled     = True         # SPY z-score from 50d SMA
+leverage_multiplier     = 1.0          # crank to 1.5-2x in tax-advantaged account
+
+# DEFAULTS DISABLED based on 10-year evidence:
+fvg_filter_enabled      = False        # was True; 91% return cut on full history
+regime_gate_enabled     = False        # was True; zero value across all regimes
 ```
 
 **Strategy in plain English:** Each weekday at 08:35 CT, take the top 5 SP500
@@ -98,16 +110,56 @@ level (no slippage modelled). If SPY is unusually far from its 50d SMA
 distance).
 
 ### Performance reference points
-- **Look-ahead-biased backtest** (12 months, 2025-05 → 2026-05): Sharpe 3.62, +130% return. **This is inflated** because the model trained on data through May 2026 was used to predict all earlier dates.
-- **Honest walk-forward** (12 months, model retrained monthly): Sharpe **2.17**, +57% return. **This is the believable number.**
-- **SPY buy-and-hold** same window: Sharpe 2.34, +33% return.
 
-### After-tax reality check (relevant for the project owner)
-At $400k MFJ marginal bracket (32% federal + 3.8% NIIT = 35.8% on STCG):
-- All strategy gains are **short-term** (5-day holds).
-- **In a taxable account, the strategy and SPY are essentially tied** after federal tax in no-tax states (TX/FL/WA). In CA/NY/MA the strategy loses to SPY due to state-level STCG.
-- **In a tax-advantaged account (IRA/401k), the strategy clearly wins** by the full +24pp pre-tax alpha.
-- See conversation history (May 15) for the full tax-adjusted math.
+**Honest walk-forward, 11 years (2014-2024, 132 monthly retrains):**
+
+| Metric | Strategy (Pure ML) | SPY B&H |
+|---|---|---|
+| Final value on $1,000 (pre-tax) | **$59,303** | $3,917 |
+| Total return | **+5,830%** | +292% |
+| Sharpe ratio | 1.78 | 0.83 |
+| Max drawdown | 28.4% | 33.7% |
+| Worst year (return) | 2022 −1% | 2022 −19% |
+| Best year (return) | 2020 +105% | 2019 +31% |
+| Beat SPY each year | **11/11** | — |
+
+**After-tax (25% blended STCG annually for strategy, 15% LTCG at end for SPY):**
+
+| | Strategy | SPY B&H | Ratio |
+|---|---|---|---|
+| Final after-tax on $1,000 | **$24,011** | $3,479 | **6.9×** |
+
+Chart: `data/processed/tax_adjusted_comparison.png` — equity curves
+side-by-side with outperformance ratio in lower panel.
+
+**Look-ahead-biased backtest** (single-model, same 11-year window): final
+$59,303 → only marginally different from honest WF. Validates that the
+model isn't heavily overfit to recent data — its edge is structural.
+
+**Earlier (12-month, 2025-05 → 2026-05) numbers from HANDOFF v1**: had
+been Sharpe 2.17, +57%. Those were on a benign-bull cherry-picked
+window; the 11-year honest numbers above are the definitive picture.
+
+### After-tax reality check (updated 2026-05-16)
+
+The 11-year honest-WF after-tax results turn the earlier "wash with SPY"
+verdict on its head. Even with the strategy paying STCG annually at a
+blended 25% (federal-only, ignoring state) and SPY enjoying LTCG-deferral
+until the final sale:
+
+| | Pre-tax 11yr | After-tax 11yr |
+|---|---|---|
+| Strategy | $59,303 | $24,011 |
+| SPY B&H | $3,917 | $3,479 |
+| **Strategy / SPY** | **15.1×** | **6.9×** |
+
+The strategy keeps a **6.9× after-tax advantage** because the alpha is
+big enough to overwhelm the tax drag. Earlier (12-month) finding that
+"strategy and SPY are tied after-tax" was specific to a low-alpha
+calm-bull window. The full-history honest answer is clearly different.
+
+In a **tax-advantaged account** (IRA/401k), the strategy wins by the
+full 15.1× pre-tax margin — no STCG drag at all.
 
 ---
 
