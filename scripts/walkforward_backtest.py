@@ -61,17 +61,31 @@ _TRAIN_LOOKBACK_DAYS = 365 * _DEFAULT_LOOKBACK_YEARS
 _WF_DIR = Path("data/processed/walkforward")
 
 
-def _trading_days(start: date, end: date) -> list[date]:
-    cal = mcal.get_calendar("NYSE")
+# Per-universe trading calendar. Indian indices follow NSE which has
+# different holidays from NYSE (Diwali, Holi, Independence Day, etc.) —
+# using the wrong calendar would miss real trading days and add fake ones.
+_UNIVERSE_CALENDAR = {
+    "SP500": "NYSE",
+    "NIFTY100": "XNSE",
+    "NIFTY50": "XNSE",
+}
+
+
+def _calendar_for(universe: str) -> str:
+    return _UNIVERSE_CALENDAR.get(universe, "NYSE")
+
+
+def _trading_days(start: date, end: date, *, calendar: str = "NYSE") -> list[date]:
+    cal = mcal.get_calendar(calendar)
     sched = cal.schedule(start_date=start.isoformat(), end_date=end.isoformat())
     if sched.empty:
         return []
     return [d.date() for d in sched.index.to_pydatetime()]
 
 
-def _retrain_dates(start: date, end: date) -> list[date]:
+def _retrain_dates(start: date, end: date, *, calendar: str = "NYSE") -> list[date]:
     """First trading day of each calendar month between start and end."""
-    days = _trading_days(start, end)
+    days = _trading_days(start, end, calendar=calendar)
     seen_months: set[tuple[int, int]] = set()
     out: list[date] = []
     for d in days:
@@ -95,6 +109,14 @@ def _load_production_configs(universe: str) -> tuple[TrainConfig, TrainConfig]:
     reg_cfg = _config_from_meta(models.reg_meta.get("config", {}), "regression")
     cls_cfg = _config_from_meta(models.cls_meta.get("config", {}), "classification")
     return reg_cfg, cls_cfg
+
+
+def _load_configs_for(universe: str, *, hyperparams_from: str | None) -> tuple[TrainConfig, TrainConfig]:
+    """Load hyperparameter configs, optionally borrowing them from a different
+    universe. Useful when target-universe production models were trained on
+    suspect data (e.g. NIFTY100 May-7 models trained pre-HAL-fix) — borrow
+    SP500's tuned params as a sane proxy."""
+    return _load_production_configs(hyperparams_from or universe)
 
 
 def _config_from_meta(meta_cfg: dict, target: str) -> TrainConfig:
@@ -272,6 +294,8 @@ def run_walkforward(
     *,
     horizon_days: int = _DEFAULT_HORIZON,
     out_dir: Path = _WF_DIR,
+    hyperparams_from: str | None = None,
+    calendar: str | None = None,
 ) -> dict:
     """Top-level entry. Returns a summary dict; report.json is written too."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -279,22 +303,25 @@ def run_walkforward(
     paper_path = str(out_dir / "paper.sqlite")
     report_path = out_dir / "report.json"
 
+    cal = calendar or _calendar_for(universe)
+
     # Fresh predictions DB for the walk-forward.
     Path(preds_path).unlink(missing_ok=True)
     init_predictions_db(preds_path)
 
     log.info(
         f"walkforward: universe={universe} window={start}..{end} "
+        f"calendar={cal} hyperparams_from={hyperparams_from or universe} "
         f"out={out_dir}"
     )
-    reg_cfg, cls_cfg = _load_production_configs(universe)
+    reg_cfg, cls_cfg = _load_configs_for(universe, hyperparams_from=hyperparams_from)
     log.info(
         f"walkforward: reg_lr={reg_cfg.learning_rate:.4f} "
         f"reg_leaves={reg_cfg.num_leaves} cls_lr={cls_cfg.learning_rate:.4f}"
     )
 
-    retrain_dates = _retrain_dates(start, end)
-    all_trading = _trading_days(start, end)
+    retrain_dates = _retrain_dates(start, end, calendar=cal)
+    all_trading = _trading_days(start, end, calendar=cal)
     log.info(
         f"walkforward: {len(retrain_dates)} monthly retrains over "
         f"{len(all_trading)} trading days"
@@ -410,6 +437,17 @@ def main() -> int:
     )
     p.add_argument("--horizon-days", type=int, default=_DEFAULT_HORIZON)
     p.add_argument("--out-dir", type=Path, default=_WF_DIR)
+    p.add_argument(
+        "--hyperparams-from", default=None,
+        help="Universe whose production model hyperparams should be reused "
+             "(e.g. SP500 to borrow tuned params for NIFTY100 WF). "
+             "Defaults to --universe.",
+    )
+    p.add_argument(
+        "--calendar", default=None,
+        help="pandas_market_calendars name (NYSE, XNSE, etc.). "
+             "Auto-selected from universe if not set.",
+    )
     args = p.parse_args()
     end = args.end or (date.today() - timedelta(days=1))
     start = args.start or (end - timedelta(days=365 * 2))
@@ -417,6 +455,8 @@ def main() -> int:
         run_walkforward(
             args.universe, start, end,
             horizon_days=args.horizon_days, out_dir=args.out_dir,
+            hyperparams_from=args.hyperparams_from,
+            calendar=args.calendar,
         )
     except Exception:  # noqa: BLE001
         log.error(f"walkforward crashed: {traceback.format_exc()}")

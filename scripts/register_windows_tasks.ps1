@@ -25,13 +25,14 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot          = "C:\dev\ta-agent"
 $PipelineWrapper   = "$RepoRoot\scripts\run_pipeline.cmd"
+$IndiaPipelineWrapper = "$RepoRoot\scripts\run_india_pipeline.cmd"
 $MonthlyWrapper    = "$RepoRoot\scripts\run_monthly_retrain.cmd"
 $QuarterlyWrapper  = "$RepoRoot\scripts\run_quarterly_retune.cmd"
 $LogDir            = "$RepoRoot\logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 # Sanity checks
-foreach ($w in @($PipelineWrapper, $MonthlyWrapper, $QuarterlyWrapper)) {
+foreach ($w in @($PipelineWrapper, $IndiaPipelineWrapper, $MonthlyWrapper, $QuarterlyWrapper)) {
     if (-not (Test-Path $w)) {
         Write-Error "$w not found - wrong checkout?"
         exit 1
@@ -101,6 +102,21 @@ Register-ScheduledTask `
     -Description "ta-agent: refresh OHLCV + predict + paper backtest + drift_check at 17:00 CT" `
     -Force | Out-Null
 Write-Host "registered: $TaskName5pm (weekdays 17:00 local)"
+
+# 6:00 AM CT - India pipeline (post-NSE-close). NSE closes 03:30 PM IST
+# = ~01:00 AM CT in CST / ~02:00 AM CT in CDT. Firing at 06:00 CT gives
+# 4-5 hours for Kite data to settle. Only refreshes India OHLCV +
+# generates NIFTY100 picks; SP500 is overnight at this hour and the
+# inner daily_predict gracefully skips it as a non-trading day.
+$TaskNameIndia = "ta-agent-pipeline-india-am-ct"
+Register-ScheduledTask `
+    -TaskName $TaskNameIndia `
+    -Action (Build-Action $IndiaPipelineWrapper) `
+    -Trigger (Build-WeekdayTrigger -Hour 6 -Minute 0) `
+    -Settings $Settings `
+    -Description "ta-agent: Kite NSE refresh + NIFTY100 predict + drift_check at 06:00 CT" `
+    -Force | Out-Null
+Write-Host "registered: $TaskNameIndia (weekdays 06:00 local)"
 
 # 1st of every month at 02:00 CT - cheap monthly retrain.
 # Reuses Optuna-tuned hyperparams from the most recent quarterly tune,

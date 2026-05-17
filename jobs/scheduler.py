@@ -181,6 +181,32 @@ def _job_india_ingest() -> None:
     _safe_run("india_ingest", lambda: daily_update("NIFTY100"))
 
 
+def _job_india_ct_pipeline() -> None:
+    """India counterpart to ``_job_us_ct_pipeline``. Fires once per day in
+    the early CT morning (NSE closes 03:30 PM IST = ~01:00 AM CT in CST,
+    ~02:00 AM CT in CDT). At 06:00 AM CT we're 4-5 hours past close — Kite
+    has settled the day's bars, and Phase A's paper backtest can run.
+
+    Steps:
+      1. India OHLCV refresh (Kite, NIFTY100)
+      2. daily_predict — iterates BOTH universes but only India will be
+         a trading day at this hour (US is overnight), so SP500 fires
+         a no-op skip and NIFTY100 produces today's picks
+      3. settlement catchup
+      4. paper backtest replay (same engine; will pick up NIFTY100 too
+         once paper backtest is generalized — for now this is the US
+         curve refresh on cached data)
+      5. drift check
+    """
+    log.info("[scheduler] india_ct_pipeline: starting")
+    _job_india_ingest()
+    _job_daily_predict()
+    _job_settlement_catchup()
+    _job_paper_backtest()
+    _job_drift_check()
+    log.info("[scheduler] india_ct_pipeline: complete")
+
+
 def _job_daily_predict() -> None:
     from jobs.daily_predict import run as predict_run
 

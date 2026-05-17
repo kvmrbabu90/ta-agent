@@ -386,33 +386,65 @@ def _load_ohlcv_for_symbols(
     symbols: list[str],
     start: date,
     end: date,
+    *,
+    universe: str | None = None,
 ) -> pd.DataFrame:
     """Pull open/high/low/close for the universe in one shot.
 
     `low` is used for the rolling-support stop-loss calc;
     `high`+`low`+`close` together feed the True-Range calculation that
     ATR-mode stops depend on; `open`/`close` for execution and marking.
+
+    When ``universe`` is provided, the join is restricted to the
+    ``(symbol, exchange)`` pairs that belong to that universe in
+    ``index_membership``. This is non-negotiable for universes that
+    share tickers across exchanges (e.g. HAL is Halliburton on NYSE
+    AND Hindustan Aeronautics on NSE — without the exchange filter
+    the loader would silently pull bars from the wrong exchange).
     """
     if not symbols:
         return pd.DataFrame(
             columns=["symbol", "bar_date", "open", "high", "low", "close"]
         )
-    rows = duck.execute(
-        """
-        WITH ranked AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY symbol, bar_date
-                ORDER BY ingested_at DESC
-            ) AS rn
-            FROM ohlcv_daily
-            WHERE symbol = ANY(?) AND bar_date BETWEEN ? AND ?
-        )
-        SELECT symbol, bar_date, open, high, low, close
-        FROM ranked WHERE rn = 1
-        ORDER BY symbol, bar_date
-        """,
-        [symbols, start, end],
-    ).df()
+    if universe:
+        rows = duck.execute(
+            """
+            WITH membership AS (
+                SELECT DISTINCT symbol, exchange FROM index_membership
+                WHERE universe = ? AND symbol = ANY(?)
+            ),
+            ranked AS (
+                SELECT o.*, ROW_NUMBER() OVER (
+                    PARTITION BY o.symbol, o.bar_date
+                    ORDER BY o.ingested_at DESC
+                ) AS rn
+                FROM ohlcv_daily o
+                JOIN membership m USING (symbol, exchange)
+                WHERE o.bar_date BETWEEN ? AND ?
+            )
+            SELECT symbol, bar_date, open, high, low, close
+            FROM ranked WHERE rn = 1
+            ORDER BY symbol, bar_date
+            """,
+            [universe, symbols, start, end],
+        ).df()
+    else:
+        rows = duck.execute(
+            """
+            WITH ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY symbol, bar_date
+                    ORDER BY ingested_at DESC
+                ) AS rn
+                FROM ohlcv_daily
+                WHERE symbol = ANY(?) AND bar_date BETWEEN ? AND ?
+            )
+            SELECT symbol, bar_date, open, high, low, close
+            FROM ranked WHERE rn = 1
+            ORDER BY symbol, bar_date
+            """,
+            [symbols, start, end],
+        ).df()
     if not rows.empty:
         rows["bar_date"] = pd.to_datetime(rows["bar_date"]).dt.date
     return rows
@@ -438,11 +470,62 @@ def _ibkr_lite_close_cost(qty: float, price: float) -> float:
     return max(0.01, total) if total > 0 else 0.0
 
 
+# India retail equity costs (Zerodha Kite, delivery, 2026 schedule).
+# Source: zerodha.com/charges. Applied per leg. The strategy holds 5
+# days, so all closes are "delivery" (STT 0.1% on sell). Brokerage is
+# zero on delivery. Other components scale with notional. Numbers below
+# are fractions of notional (e.g. 0.001 = 10 bps).
+_INDIA_STT_DELIVERY_SELL = 0.001          # 0.1% on sell side only
+_INDIA_EXCHANGE_TXN_CHARGE = 0.0000297    # NSE rate per side (cash equity)
+_INDIA_SEBI_TURNOVER_FEE = 0.000001       # ₹10 per crore per side
+_INDIA_STAMP_DUTY_BUY = 0.00015           # 0.015% on buy side only
+_INDIA_GST_ON_FEES = 0.18                 # 18% of (brokerage + exchange + SEBI)
+
+
+def _india_zerodha_open_cost(qty: float, price: float) -> float:
+    """Buy-side costs in India (Zerodha delivery).
+    Brokerage 0, exchange + SEBI + GST on those + stamp duty.
+    Total ~1.7 bps per buy."""
+    notional = qty * price
+    brokerage = 0.0  # Zerodha delivery
+    exchange = _INDIA_EXCHANGE_TXN_CHARGE * notional
+    sebi = _INDIA_SEBI_TURNOVER_FEE * notional
+    gst = (brokerage + exchange + sebi) * _INDIA_GST_ON_FEES
+    stamp = _INDIA_STAMP_DUTY_BUY * notional
+    return brokerage + exchange + sebi + gst + stamp
+
+
+def _india_zerodha_close_cost(qty: float, price: float) -> float:
+    """Sell-side costs in India (Zerodha delivery).
+    STT dominates at 0.1%. Plus exchange + SEBI + GST.
+    Total ~10.3 bps per sell."""
+    notional = qty * price
+    brokerage = 0.0
+    stt = _INDIA_STT_DELIVERY_SELL * notional
+    exchange = _INDIA_EXCHANGE_TXN_CHARGE * notional
+    sebi = _INDIA_SEBI_TURNOVER_FEE * notional
+    gst = (brokerage + exchange + sebi) * _INDIA_GST_ON_FEES
+    return brokerage + stt + exchange + sebi + gst
+
+
+def _open_cost(model: str, qty: float, price: float) -> float:
+    """Cost charged AT POSITION OPEN. Most US brokers (IBKR Lite, Robinhood,
+    Schwab) charge $0 on opens for retail. Indian retail pays small
+    exchange + SEBI + stamp fees on buys."""
+    if model in ("none", "ibkr_lite"):
+        return 0.0
+    if model == "india_zerodha":
+        return _india_zerodha_open_cost(qty, price)
+    raise ValueError(f"unknown commission_model={model!r}")
+
+
 def _close_cost(model: str, qty: float, price: float) -> float:
     if model == "none":
         return 0.0
     if model == "ibkr_lite":
         return _ibkr_lite_close_cost(qty, price)
+    if model == "india_zerodha":
+        return _india_zerodha_close_cost(qty, price)
     raise ValueError(f"unknown commission_model={model!r}")
 
 
@@ -743,6 +826,7 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
             all_syms,
             pred_start - pd.Timedelta(days=lookback_pad).to_pytimedelta(),
             pred_end + pd.Timedelta(days=15).to_pytimedelta(),
+            universe=cfg.universe,
         )
     finally:
         duck.close()
@@ -909,13 +993,18 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
                             )
                             if support is not None:
                                 stop_level = support * (1.0 - cfg.stop_buffer_pct)
-                    cash -= qty * px  # no commission on opens under IBKR Lite
+                    # Open-side commission. IBKR Lite = 0. India retail
+                    # (zerodha delivery) ≈ 1.7 bps from exchange fees +
+                    # stamp duty. Logged as `cost` column so it shows up in
+                    # the trade-level accounting.
+                    open_cost_amt = _open_cost(cfg.commission_model, qty, px)
+                    cash -= qty * px + open_cost_amt
                     paper_conn.execute(
                         "INSERT OR REPLACE INTO paper_trades (run_id, trade_date, lot_id, "
                         "symbol, side, qty, fill_price, cash_delta, realized_pnl, cost) "
-                        "VALUES (?, ?, ?, ?, 'long_open', ?, ?, ?, 0, 0)",
+                        "VALUES (?, ?, ?, ?, 'long_open', ?, ?, ?, 0, ?)",
                         (cfg.run_id, d.isoformat(), lot_id_today, sym,
-                         qty, px, -(qty * px)),
+                         qty, px, -(qty * px + open_cost_amt), open_cost_amt),
                     )
                     open_lots.append(_Lot(
                         lot_id=lot_id_today, symbol=sym, qty=qty,
