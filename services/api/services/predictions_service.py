@@ -27,6 +27,8 @@ from services.api.schemas import (
     HistoryPoint,
     ICPoint,
     MemberInfo,
+    ModelInfoResponse,
+    ModelTargetInfo,
     OHLCVPoint,
     OHLCVResponse,
     PerformanceResponse,
@@ -35,6 +37,9 @@ from services.api.schemas import (
     TopPick,
     TopPicksResponse,
     UniverseInfo,
+    WalkforwardEquityPoint,
+    WalkforwardResponse,
+    WalkforwardSummary,
 )
 
 _CALIBRATION_BINS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -635,4 +640,320 @@ def explain_for_symbol(
         as_of=as_of,
         predicted_return_5d=predicted_return,
         top_features=contributions,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /performance/model/{universe} — current production model snapshot
+# ---------------------------------------------------------------------------
+
+
+def _latest_model_dir(universe: str, target: str) -> str | None:
+    """Find the most-recently-saved model directory for (universe, target).
+
+    Directories are named '<UNIVERSE>_<target>_<YYYYMMDD_HHMMSS>'. We pick the
+    lexicographically-greatest matching name, which is also the most recent
+    because of the timestamp format.
+    """
+    import os
+    from packages.common.config import MODELS_DIR
+    prefix = f"{universe}_{target}_"
+    candidates = [
+        d for d in os.listdir(MODELS_DIR)
+        if d.startswith(prefix) and not d.startswith("BROKEN")
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates)[-1]
+
+
+def _read_model_metadata(model_dir: str) -> dict | None:
+    """Read metadata.json from a model directory. Returns None if missing."""
+    import json
+    import os
+    from packages.common.config import MODELS_DIR
+    p = os.path.join(MODELS_DIR, model_dir, "metadata.json")
+    if not os.path.exists(p):
+        return None
+    with open(p) as f:
+        return json.load(f)
+
+
+def _build_target_info(universe: str, target: str) -> ModelTargetInfo | None:
+    model_dir = _latest_model_dir(universe, target)
+    if model_dir is None:
+        return None
+    meta = _read_model_metadata(model_dir)
+    if meta is None:
+        return None
+    cfg = meta.get("config", {}) or {}
+    cv = meta.get("cv_metrics", {}) or {}
+    return ModelTargetInfo(
+        target=target,
+        model_id=model_dir,
+        train_start=meta["train_start"],
+        train_end=meta["train_end"],
+        n_features=len(meta.get("feature_cols", [])),
+        horizon_days=int(meta.get("horizon_days", 5)),
+        learning_rate=cfg.get("learning_rate"),
+        num_leaves=cfg.get("num_leaves"),
+        min_data_in_leaf=cfg.get("min_data_in_leaf"),
+        cv_mean_metrics=cv.get("mean", {}) or {},
+        cv_std_metrics=cv.get("std", {}) or {},
+        cv_fold_count=len(cv.get("fold_metrics", []) or []),
+    )
+
+
+def _training_parquet_stats(universe: str) -> tuple[int | None, int | None, list[date] | None]:
+    """Read row count, distinct symbol count, and date range from the
+    universe's training parquet on disk. Returns (None, None, None) if absent.
+    """
+    import os
+    from packages.common.config import PROCESSED_DIR
+    p = os.path.join(PROCESSED_DIR, f"training_{universe.lower()}.parquet")
+    if not os.path.exists(p):
+        return None, None, None
+    try:
+        df = pd.read_parquet(p, columns=["symbol", "bar_date"])
+    except Exception:  # noqa: BLE001
+        return None, None, None
+    return (
+        int(len(df)),
+        int(df["symbol"].nunique()),
+        [pd.to_datetime(df["bar_date"]).min().date(), pd.to_datetime(df["bar_date"]).max().date()],
+    )
+
+
+def get_model_info(duck: duckdb.DuckDBPyConnection, universe: str) -> ModelInfoResponse:
+    n_members_row = duck.execute(
+        "SELECT COUNT(DISTINCT symbol) FROM index_membership "
+        "WHERE universe = ? AND end_date IS NULL",
+        [universe],
+    ).fetchone()
+    n_members = int(n_members_row[0]) if n_members_row else 0
+
+    rows, sym_n, date_range = _training_parquet_stats(universe)
+
+    targets: list[ModelTargetInfo] = []
+    for target in ("regression", "classification"):
+        info = _build_target_info(universe, target)
+        if info is not None:
+            targets.append(info)
+
+    return ModelInfoResponse(
+        universe=universe,
+        n_members=n_members,
+        training_rows=rows,
+        training_symbols=sym_n,
+        training_date_range=date_range,
+        targets=targets,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /performance/walkforward/{universe} — tax-adjusted equity curves
+# ---------------------------------------------------------------------------
+
+# Tax rates per universe. Match the existing tax_adjusted_comparison.py
+# defaults (US 25% blended STCG, 15% LTCG). India numbers reflect the
+# post-July-2024 budget: 20% STCG, 12.5% LTCG.
+_TAX_RATES = {
+    "SP500": {"strategy_stcg": 0.25, "benchmark_ltcg": 0.15},
+    "NIFTY100": {"strategy_stcg": 0.20, "benchmark_ltcg": 0.125},
+}
+
+# Per-universe benchmark mapping.
+_BENCHMARK = {
+    "SP500": ("SPY", "SPY B&H", "USD"),
+    "NIFTY100": ("NIFTYBEES", "NIFTY 50 ETF (NIFTYBEES) B&H", "INR"),
+}
+
+
+def _strategy_per_year_returns(universe: str) -> pd.DataFrame:
+    """Pull the per-year return of the live paper-backtest 'default'-equivalent
+    run from the predictions_log -> paper backtest replay. We re-run the engine
+    once on the WF predictions to get a year-by-year equity decomposition.
+    """
+    import sqlite3
+    from packages.paper_trading import StrategyConfig, backtest
+
+    # Cache path: re-run the backtest only if WF preds are newer than the
+    # cached paper.sqlite entry. For simplicity we always re-run if a cached
+    # equity curve isn't found for the canonical analysis run_id.
+    canonical_run_id = f"wf_{universe.lower()}_canon"
+    paper_db = "data/processed/india_phase_a/analysis.sqlite" if universe == "NIFTY100" \
+        else "data/processed/walkforward_10yr/analysis.sqlite"
+    preds_db = "data/processed/india_phase_a/walkforward/predictions.sqlite" if universe == "NIFTY100" \
+        else "data/processed/walkforward_10yr/predictions.sqlite"
+
+    import os
+    if not os.path.exists(preds_db):
+        return pd.DataFrame(columns=["year", "return"])
+
+    need_run = True
+    if os.path.exists(paper_db):
+        try:
+            c = sqlite3.connect(paper_db)
+            n = c.execute(
+                "SELECT COUNT(*) FROM paper_equity WHERE run_id=? AND snapshot_kind='close_5pm_ct'",
+                (canonical_run_id,),
+            ).fetchone()[0]
+            c.close()
+            if n > 0:
+                need_run = False
+        except Exception:  # noqa: BLE001
+            need_run = True
+
+    if need_run:
+        cfg = StrategyConfig(
+            run_id=canonical_run_id,
+            universe=universe,
+            predictions_sqlite_path=preds_db,
+            paper_db_path=paper_db,
+            commission_model="india_zerodha" if universe == "NIFTY100" else "ibkr_lite",
+        )
+        backtest(cfg)
+
+    c = sqlite3.connect(paper_db)
+    df = pd.read_sql_query(
+        "SELECT trade_date, equity FROM paper_equity "
+        "WHERE run_id = ? AND snapshot_kind = 'close_5pm_ct' "
+        "ORDER BY trade_date",
+        c, params=[canonical_run_id],
+    )
+    c.close()
+    if df.empty:
+        return pd.DataFrame(columns=["year", "return"])
+    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+    df["year"] = pd.to_datetime(df["trade_date"]).dt.year
+    rows = []
+    for year, g in df.groupby("year"):
+        eqs = g["equity"].to_numpy()
+        rows.append({"year": int(year), "return": float(eqs[-1] / eqs[0] - 1)})
+    return pd.DataFrame(rows)
+
+
+def _benchmark_per_year_returns(
+    duck: duckdb.DuckDBPyConnection,
+    benchmark_symbol: str,
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    rows = duck.execute(
+        "SELECT bar_date, close FROM ohlcv_daily WHERE symbol = ? "
+        "AND bar_date BETWEEN ? AND ? ORDER BY bar_date",
+        [benchmark_symbol, start, end],
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=["year", "return"])
+    df = pd.DataFrame(rows, columns=["trade_date", "close"])
+    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+    df["year"] = pd.to_datetime(df["trade_date"]).dt.year
+    out = []
+    for year, g in df.groupby("year"):
+        closes = g["close"].to_numpy()
+        out.append({"year": int(year), "return": float(closes[-1] / closes[0] - 1)})
+    return pd.DataFrame(out)
+
+
+def get_walkforward_taxadjusted(
+    duck: duckdb.DuckDBPyConnection, universe: str
+) -> WalkforwardResponse:
+    if universe not in _BENCHMARK:
+        raise ValueError(f"no benchmark mapping for universe={universe!r}")
+    bench_sym, bench_label, currency = _BENCHMARK[universe]
+    rates = _TAX_RATES[universe]
+    stcg = rates["strategy_stcg"]
+    ltcg = rates["benchmark_ltcg"]
+    starting = 1000.0
+
+    strat_yr = _strategy_per_year_returns(universe)
+    if strat_yr.empty:
+        return WalkforwardResponse(
+            universe=universe,
+            benchmark_symbol=bench_sym,
+            benchmark_label=bench_label,
+            currency=currency,
+            years=[],
+            summary=WalkforwardSummary(
+                starting_capital=starting,
+                strategy_final_pretax=starting,
+                strategy_final_aftertax=starting,
+                benchmark_final_pretax=starting,
+                benchmark_final_aftertax=starting,
+                outperformance_multiple=1.0,
+                strategy_stcg_rate=stcg,
+                benchmark_ltcg_rate=ltcg,
+            ),
+        )
+    start = date(int(strat_yr["year"].min()), 1, 1)
+    end = date(int(strat_yr["year"].max()), 12, 31)
+    bench_yr = _benchmark_per_year_returns(duck, bench_sym, start, end)
+
+    # Strategy: annual STCG drag.
+    strat_eq = starting
+    strat_eq_pretax = starting
+    strat_rows: dict[int, dict] = {}
+    for _, r in strat_yr.iterrows():
+        year = int(r["year"])
+        ret = float(r["return"])
+        aftertax_ret = ret * (1 - stcg)
+        strat_eq = strat_eq * (1 + aftertax_ret)
+        strat_eq_pretax = strat_eq_pretax * (1 + ret)
+        strat_rows[year] = {
+            "strategy_return_pct": ret * 100,
+            "strategy_aftertax_pct": aftertax_ret * 100,
+            "strategy_equity": strat_eq,
+        }
+
+    # Benchmark: gains compound tax-deferred; LTCG applied only at terminal.
+    bench_eq_pretax = starting
+    bench_rows: dict[int, dict] = {}
+    for _, r in bench_yr.iterrows():
+        year = int(r["year"])
+        ret = float(r["return"])
+        bench_eq_pretax = bench_eq_pretax * (1 + ret)
+        liquidation = starting + (bench_eq_pretax - starting) * (1 - ltcg)
+        bench_rows[year] = {
+            "benchmark_return_pct": ret * 100,
+            "benchmark_equity_pretax": bench_eq_pretax,
+            "benchmark_equity_aftertax": liquidation,
+        }
+
+    years_out: list[WalkforwardEquityPoint] = []
+    for year in sorted(strat_rows.keys()):
+        s = strat_rows[year]
+        b = bench_rows.get(year)
+        years_out.append(WalkforwardEquityPoint(
+            year=year,
+            strategy_return_pct=s["strategy_return_pct"],
+            strategy_aftertax_pct=s["strategy_aftertax_pct"],
+            strategy_equity=s["strategy_equity"],
+            benchmark_return_pct=(b or {}).get("benchmark_return_pct", 0.0),
+            benchmark_equity_pretax=(b or {}).get("benchmark_equity_pretax", starting),
+            benchmark_equity_aftertax=(b or {}).get("benchmark_equity_aftertax", starting),
+        ))
+
+    final = years_out[-1] if years_out else None
+    summary = WalkforwardSummary(
+        starting_capital=starting,
+        strategy_final_pretax=strat_eq_pretax,
+        strategy_final_aftertax=final.strategy_equity if final else starting,
+        benchmark_final_pretax=final.benchmark_equity_pretax if final else starting,
+        benchmark_final_aftertax=final.benchmark_equity_aftertax if final else starting,
+        outperformance_multiple=(
+            (final.strategy_equity / final.benchmark_equity_aftertax)
+            if final and final.benchmark_equity_aftertax > 0 else 1.0
+        ),
+        strategy_stcg_rate=stcg,
+        benchmark_ltcg_rate=ltcg,
+    )
+
+    return WalkforwardResponse(
+        universe=universe,
+        benchmark_symbol=bench_sym,
+        benchmark_label=bench_label,
+        currency=currency,
+        years=years_out,
+        summary=summary,
     )

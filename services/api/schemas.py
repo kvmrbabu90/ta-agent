@@ -265,3 +265,72 @@ class SystemStatusResponse(_BaseResponse):
     last_refresh_utc: str | None = None
     # Latest bar_date present in ohlcv_daily (YYYY-MM-DD).
     latest_bar_date: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# /performance/model/{universe} — current production model snapshot
+# ---------------------------------------------------------------------------
+
+
+class ModelTargetInfo(_BaseResponse):
+    """Per-target (regression/classification) model metadata."""
+    target: str  # 'regression' | 'classification'
+    model_id: str  # directory name e.g. 'SP500_regression_20260517_064753'
+    train_start: date
+    train_end: date
+    n_features: int
+    horizon_days: int
+    # Tuned hyperparameters (subset; full config available in the model dir)
+    learning_rate: float | None = None
+    num_leaves: int | None = None
+    min_data_in_leaf: int | None = None
+    # CV mean metrics. For regression: mean_daily_ic, mean_daily_rank_ic,
+    # mean_decile_spread, hit_rate. For classification: val_accuracy.
+    cv_mean_metrics: dict = Field(default_factory=dict)
+    cv_std_metrics: dict = Field(default_factory=dict)
+    cv_fold_count: int = 0
+
+
+class ModelInfoResponse(_BaseResponse):
+    universe: str
+    n_members: int  # current active members in this universe
+    training_rows: int | None = None  # row count of the latest training parquet
+    training_symbols: int | None = None  # distinct symbols in training data
+    training_date_range: list[date] | None = None  # [min_bar_date, max_bar_date]
+    targets: list[ModelTargetInfo] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# /performance/walkforward/{universe} — tax-adjusted equity curves
+# ---------------------------------------------------------------------------
+
+
+class WalkforwardEquityPoint(_BaseResponse):
+    """One per-year row of compounded equity, both pre- and post-tax."""
+    year: int
+    strategy_return_pct: float       # pre-tax annual return %
+    strategy_aftertax_pct: float     # post-tax annual return % (STCG applied)
+    strategy_equity: float           # starting=1000, end-of-year post-tax equity
+    benchmark_return_pct: float
+    benchmark_equity_pretax: float   # mark-to-market pre-tax equity (compounds tax-deferred)
+    benchmark_equity_aftertax: float # liquidation value if you sold this year (LTCG applied)
+
+
+class WalkforwardSummary(_BaseResponse):
+    starting_capital: float
+    strategy_final_pretax: float
+    strategy_final_aftertax: float
+    benchmark_final_pretax: float
+    benchmark_final_aftertax: float
+    outperformance_multiple: float   # strategy / benchmark, both after-tax
+    strategy_stcg_rate: float        # tax rate used for strategy
+    benchmark_ltcg_rate: float       # tax rate used for benchmark
+
+
+class WalkforwardResponse(_BaseResponse):
+    universe: str
+    benchmark_symbol: str            # 'SPY' for US, 'NIFTYBEES' for India
+    benchmark_label: str             # human-readable e.g. 'SPY B&H', 'NIFTY 50 B&H'
+    currency: str                    # 'USD' or 'INR'
+    years: list[WalkforwardEquityPoint] = Field(default_factory=list)
+    summary: WalkforwardSummary

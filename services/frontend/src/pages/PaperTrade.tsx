@@ -1,23 +1,54 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
 import { Banknote, Clock, TrendingDown, TrendingUp } from 'lucide-react';
 import { usePaperSnapshot, usePaperTrades } from '@/hooks/usePaper';
+import { useUniverses } from '@/hooks/useUniverses';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
+import { UniverseSelector } from '@/components/UniverseSelector';
 import type { PaperEquityPoint, PaperPosition, PaperTrade, PaperRunSummary } from '@/api/types';
 
-function pctFmt(v: number, d = 2) { return `${(v * 100).toFixed(d)}%`; }
-function dollarFmt(v: number, d = 2) { return `$${v.toFixed(d)}`; }
-function dollarSignedFmt(v: number, d = 2) {
-  return `${v >= 0 ? '+' : ''}${dollarFmt(v, d)}`;
+// ---------------------------------------------------------------------------
+// Currency formatting — supports USD ($) and INR (₹ with Indian comma format)
+// ---------------------------------------------------------------------------
+
+type Currency = 'USD' | 'INR';
+
+function moneyFmt(v: number, currency: Currency, d = 2): string {
+  if (currency === 'INR') {
+    // Indian numbering system (lakhs, crores)
+    return `₹${v.toLocaleString('en-IN', {
+      minimumFractionDigits: d,
+      maximumFractionDigits: d,
+    })}`;
+  }
+  return `$${v.toFixed(d)}`;
 }
 
-/** Render the run's actual config into prose. Falls back to the legacy
- *  long/short description when v2 fields are absent (older paper.sqlite rows). */
-function describeStrategy(run: PaperRunSummary): string {
+function signedMoneyFmt(v: number, currency: Currency, d = 2): string {
+  return `${v >= 0 ? '+' : ''}${moneyFmt(v, currency, d)}`;
+}
+
+function pctFmt(v: number, d = 2) {
+  return `${(v * 100).toFixed(d)}%`;
+}
+
+function currencySymbol(currency: Currency): string {
+  return currency === 'INR' ? '₹' : '$';
+}
+
+// Universe → run_id + currency mapping. Add more entries here as new live
+// runs come online (e.g. a second SP500 run with different sizing).
+const UNIVERSE_RUNS: Record<string, { run_id: string; currency: Currency }> = {
+  SP500: { run_id: 'default', currency: 'USD' },
+  NIFTY100: { run_id: 'live_nifty100', currency: 'INR' },
+};
+
+/** Render the run's actual config into prose. */
+function describeStrategy(run: PaperRunSummary, currency: Currency): string {
   // Legacy run row — emit the v1 description so we don't lie.
   if (run.holding_days == null) {
     return (
@@ -25,42 +56,96 @@ function describeStrategy(run: PaperRunSummary): string {
       (run.n_short > 0
         ? `, short bottom ${run.n_short} (when predicted < -${pctFmt(run.short_threshold, 1)})`
         : '') +
-      `. Equal-weight ${dollarFmt(run.position_size, 0)} per position. ` +
+      `. Equal-weight ${moneyFmt(run.position_size, currency, 0)} per position. ` +
       `Re-rebalanced at 8am CT each trading day.`
     );
   }
-  // v2: overlapping portfolios + conviction weighting + stop-loss + IBKR Lite.
+  // v2: overlapping portfolios + conviction weighting + stop-loss.
   const stop = run.stop_loss_enabled
     ? `stop-loss at ${pctFmt(run.stop_buffer_pct ?? 0, 1)} below the ${run.support_lookback_days}-day rolling low`
     : 'no stop-loss';
   const costs =
     run.commission_model === 'ibkr_lite'
       ? 'IBKR Lite costs (sells only)'
+      : run.commission_model === 'india_zerodha'
+      ? 'Zerodha India retail costs (STT + exchange + GST + stamp)'
       : run.commission_model === 'none'
       ? 'no transaction costs'
       : `costs: ${run.commission_model}`;
+  const tz = currency === 'INR' ? '9:20 IST' : '8:35 CT';
   return (
     `Long-only, top ${run.n_long} by conviction (predicted return × direction agreement). ` +
     `Overlapping ${run.holding_days}-day portfolios: open a new slice each trading day, ` +
     `force-close after ${run.holding_days} bars. Slice size = current_equity / ${run.holding_days}, ` +
-    `weighted within slice by combined score. Rebalanced at 8:35 CT (post-open). ` +
+    `weighted within slice by combined score. Rebalanced at ${tz} (post-open). ` +
     `${stop[0].toUpperCase()}${stop.slice(1)}; ${costs}.`
   );
 }
 
 export function PaperTradePage() {
-  const snapQ = usePaperSnapshot('default', 365);
-  const tradesQ = usePaperTrades('default', 100);
+  const universesQ = useUniverses();
+  const universes = useMemo(() => universesQ.data ?? [], [universesQ.data]);
+  const [universe, setUniverse] = useState<string>('SP500');
 
-  if (snapQ.isLoading) return <LoadingSpinner label="Loading paper-trade snapshot…" />;
-  if (snapQ.isError) return <ErrorMessage error={snapQ.error} onRetry={() => snapQ.refetch()} />;
-  if (!snapQ.data) return null;
+  useEffect(() => {
+    if (universes.length > 0 && !universes.some((u) => u.name === universe)) {
+      setUniverse(universes[0].name);
+    }
+  }, [universe, universes]);
 
-  const { run, equity_curve, positions } = snapQ.data;
+  const mapping = UNIVERSE_RUNS[universe] ?? { run_id: 'default', currency: 'USD' as Currency };
+  const { run_id: runId, currency } = mapping;
+
+  const snapQ = usePaperSnapshot(runId, 365);
+  const tradesQ = usePaperTrades(runId, 100);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-gray-800 bg-gray-900/60 p-4">
+        <UniverseSelector
+          value={universe}
+          onChange={setUniverse}
+          universes={universes}
+          loading={universesQ.isLoading}
+        />
+        <span className="text-xs text-gray-500">
+          run_id <code className="rounded bg-gray-800 px-1.5 py-0.5 text-gray-300">{runId}</code>
+          {' · '}currency <span className="text-gray-300">{currency}</span>
+        </span>
+      </div>
+
+      {snapQ.isLoading && <LoadingSpinner label={`Loading ${universe} paper-trade snapshot…`} />}
+      {snapQ.isError && <ErrorMessage error={snapQ.error} onRetry={() => snapQ.refetch()} />}
+      {snapQ.data && (
+        <PaperRunView
+          data={snapQ.data}
+          trades={tradesQ.data?.trades ?? []}
+          tradesLoading={tradesQ.isLoading}
+          currency={currency}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main view (separated from page so universe switching unmounts cleanly)
+// ---------------------------------------------------------------------------
+
+function PaperRunView({
+  data, trades, tradesLoading, currency,
+}: {
+  data: { run: PaperRunSummary; equity_curve: PaperEquityPoint[]; positions: PaperPosition[] };
+  trades: PaperTrade[];
+  tradesLoading: boolean;
+  currency: Currency;
+}) {
+  const { run, equity_curve, positions } = data;
   const totalReturn = run.final_equity != null
     ? (run.final_equity - run.starting_cash) / run.starting_cash
     : 0;
   const isWinning = totalReturn >= 0;
+  const equityLabel = run.final_equity != null ? moneyFmt(run.final_equity, currency) : '—';
 
   return (
     <div className="space-y-6">
@@ -68,12 +153,12 @@ export function PaperTradePage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-100">Paper Trade</h1>
           <p className="text-sm text-gray-500">
-            {describeStrategy(run)}
+            {describeStrategy(run, currency)}
           </p>
         </div>
         <div className="text-right">
           <div className={`font-mono text-3xl font-semibold ${isWinning ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {run.final_equity != null ? dollarFmt(run.final_equity) : '—'}
+            {equityLabel}
           </div>
           <div className={`text-sm ${isWinning ? 'text-emerald-400' : 'text-rose-400'}`}>
             {totalReturn >= 0 ? '+' : ''}{pctFmt(totalReturn)} since {run.first_trade_date ?? '—'}
@@ -81,13 +166,17 @@ export function PaperTradePage() {
         </div>
       </header>
 
-      <SnapshotsToday equity_curve={equity_curve} starting_cash={run.starting_cash} />
+      <SnapshotsToday
+        equity_curve={equity_curve}
+        starting_cash={run.starting_cash}
+        currency={currency}
+      />
 
       <section className="space-y-3">
         <h2 className="text-base font-semibold text-gray-100">Equity curve</h2>
         <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
           {equity_curve.length > 0 ? (
-            <EquityChart points={equity_curve} starting={run.starting_cash} />
+            <EquityChart points={equity_curve} starting={run.starting_cash} currency={currency} />
           ) : (
             <EmptyState
               title="No equity history yet"
@@ -98,11 +187,11 @@ export function PaperTradePage() {
       </section>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <PositionsTable positions={positions} />
-        <RecentTrades data={tradesQ.data?.trades ?? []} loading={tradesQ.isLoading} />
+        <PositionsTable positions={positions} currency={currency} />
+        <RecentTrades data={trades} loading={tradesLoading} currency={currency} />
       </div>
 
-      <RunMetadata run={run} />
+      <RunMetadata run={run} currency={currency} />
     </div>
   );
 }
@@ -111,11 +200,11 @@ export function PaperTradePage() {
 // Today's two snapshots: 8am CT and 5pm CT
 // ---------------------------------------------------------------------------
 
-function SnapshotsToday({ equity_curve, starting_cash }: {
+function SnapshotsToday({ equity_curve, starting_cash, currency }: {
   equity_curve: PaperEquityPoint[];
   starting_cash: number;
+  currency: Currency;
 }) {
-  // Find the latest trade_date that has any snapshot.
   const lastDate = equity_curve.length > 0
     ? equity_curve[equity_curve.length - 1].trade_date
     : null;
@@ -129,6 +218,10 @@ function SnapshotsToday({ equity_curve, starting_cash }: {
 
   const intradayPnl = open8am && close5pm ? close5pm.equity - open8am.equity : null;
 
+  const isIndia = currency === 'INR';
+  const openLabel = isIndia ? '9:15 AM IST' : '8:00 AM CT';
+  const closeLabel = isIndia ? '3:30 PM IST' : '5:00 PM CT';
+
   return (
     <section className="space-y-3">
       <h2 className="text-base font-semibold text-gray-100">
@@ -137,17 +230,19 @@ function SnapshotsToday({ equity_curve, starting_cash }: {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <SnapshotCard
           icon={<Clock className="h-5 w-5 text-gray-400" />}
-          time="8:00 AM CT"
+          time={openLabel}
           label="Pre-market state"
           point={open8am}
           starting={starting_cash}
+          currency={currency}
         />
         <SnapshotCard
           icon={<Clock className="h-5 w-5 text-gray-400" />}
-          time="5:00 PM CT"
+          time={closeLabel}
           label="Post-close mark"
           point={close5pm}
           starting={starting_cash}
+          currency={currency}
         />
         <div className="rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-3">
           <div className="flex items-center gap-2">
@@ -160,7 +255,7 @@ function SnapshotsToday({ equity_curve, starting_cash }: {
               ? 'text-gray-500'
               : intradayPnl >= 0 ? 'text-emerald-400' : 'text-rose-400',
           ].join(' ')}>
-            {intradayPnl == null ? '—' : dollarSignedFmt(intradayPnl)}
+            {intradayPnl == null ? '—' : signedMoneyFmt(intradayPnl, currency)}
           </div>
           <div className="text-[11px] text-gray-500">close − open snapshot today</div>
         </div>
@@ -169,12 +264,13 @@ function SnapshotsToday({ equity_curve, starting_cash }: {
   );
 }
 
-function SnapshotCard({ icon, time, label, point, starting }: {
+function SnapshotCard({ icon, time, label, point, starting, currency }: {
   icon: React.ReactNode;
   time: string;
   label: string;
   point: PaperEquityPoint | undefined;
   starting: number;
+  currency: Currency;
 }) {
   if (!point) {
     return (
@@ -200,15 +296,15 @@ function SnapshotCard({ icon, time, label, point, starting }: {
         <span className="text-[11px] uppercase tracking-wider text-gray-500">{label}</span>
       </div>
       <div className={`mt-2 font-mono text-2xl font-semibold ${isPos ? 'text-emerald-400' : 'text-rose-400'}`}>
-        {dollarFmt(point.equity)}
+        {moneyFmt(point.equity, currency)}
       </div>
       <div className={`text-[11px] ${isPos ? 'text-emerald-400/80' : 'text-rose-400/80'}`}>
-        {dollarSignedFmt(pnl)} ({isPos ? '+' : ''}{pctFmt(pnl / starting)})
+        {signedMoneyFmt(pnl, currency)} ({isPos ? '+' : ''}{pctFmt(pnl / starting)})
       </div>
       <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-gray-500">
-        <span>cash <span className="text-gray-300">{dollarFmt(point.cash, 0)}</span></span>
-        <span>long <span className="text-emerald-400/80">{dollarFmt(point.long_mv, 0)}</span></span>
-        <span>short <span className="text-rose-400/80">{dollarFmt(point.short_mv, 0)}</span></span>
+        <span>cash <span className="text-gray-300">{moneyFmt(point.cash, currency, 0)}</span></span>
+        <span>long <span className="text-emerald-400/80">{moneyFmt(point.long_mv, currency, 0)}</span></span>
+        <span>short <span className="text-rose-400/80">{moneyFmt(point.short_mv, currency, 0)}</span></span>
       </div>
     </div>
   );
@@ -218,8 +314,11 @@ function SnapshotCard({ icon, time, label, point, starting }: {
 // Equity chart
 // ---------------------------------------------------------------------------
 
-function EquityChart({ points, starting }: { points: PaperEquityPoint[]; starting: number }) {
-  // Use only the close_5pm snapshot for the daily equity curve (single point per day).
+function EquityChart({ points, starting, currency }: {
+  points: PaperEquityPoint[];
+  starting: number;
+  currency: Currency;
+}) {
   const series = useMemo(
     () => points
       .filter((p) => p.snapshot_kind === 'close_5pm_ct')
@@ -230,6 +329,7 @@ function EquityChart({ points, starting }: { points: PaperEquityPoint[]; startin
     [points],
   );
   if (series.length === 0) return null;
+  const sym = currencySymbol(currency);
   return (
     <div className="h-[280px]">
       <ResponsiveContainer width="100%" height="100%">
@@ -239,17 +339,17 @@ function EquityChart({ points, starting }: { points: PaperEquityPoint[]; startin
           <YAxis
             tick={{ fontSize: 11 }}
             domain={['auto', 'auto']}
-            tickFormatter={(v) => `$${v.toFixed(0)}`}
+            tickFormatter={(v) => `${sym}${v.toFixed(0)}`}
           />
           <Tooltip
-            formatter={(v: number) => `$${v.toFixed(2)}`}
+            formatter={(v: number) => moneyFmt(v, currency)}
             labelFormatter={(d) => `Date: ${d}`}
           />
           <ReferenceLine
             y={starting}
             stroke="#6b7280"
             strokeDasharray="3 3"
-            label={{ value: `start $${starting}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
+            label={{ value: `start ${moneyFmt(starting, currency, 0)}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
           />
           <Line
             type="monotone"
@@ -269,7 +369,7 @@ function EquityChart({ points, starting }: { points: PaperEquityPoint[]; startin
 // Positions table + recent trades
 // ---------------------------------------------------------------------------
 
-function PositionsTable({ positions }: { positions: PaperPosition[] }) {
+function PositionsTable({ positions, currency }: { positions: PaperPosition[]; currency: Currency }) {
   if (positions.length === 0) {
     return (
       <section className="space-y-3">
@@ -278,6 +378,7 @@ function PositionsTable({ positions }: { positions: PaperPosition[] }) {
       </section>
     );
   }
+  const sym = currencySymbol(currency);
   return (
     <section className="space-y-3">
       <h2 className="text-base font-semibold text-gray-100">
@@ -314,12 +415,12 @@ function PositionsTable({ positions }: { positions: PaperPosition[] }) {
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">{p.qty.toFixed(3)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-400">${p.entry_price.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-400">{sym}{p.entry_price.toFixed(2)}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">
-                    {p.last_price != null ? `$${p.last_price.toFixed(2)}` : '—'}
+                    {p.last_price != null ? `${sym}${p.last_price.toFixed(2)}` : '—'}
                   </td>
                   <td className={`px-3 py-2 text-right font-mono ${isPosPnl ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {dollarSignedFmt(p.unrealized_pnl)}
+                    {signedMoneyFmt(p.unrealized_pnl, currency)}
                   </td>
                 </tr>
               );
@@ -331,7 +432,8 @@ function PositionsTable({ positions }: { positions: PaperPosition[] }) {
   );
 }
 
-function RecentTrades({ data, loading }: { data: PaperTrade[]; loading: boolean }) {
+function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading: boolean; currency: Currency }) {
+  const sym = currencySymbol(currency);
   return (
     <section className="space-y-3">
       <h2 className="text-base font-semibold text-gray-100">
@@ -373,13 +475,13 @@ function RecentTrades({ data, loading }: { data: PaperTrade[]; loading: boolean 
                         {t.side.replace('_', ' ')}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-gray-300">${t.fill_price.toFixed(2)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-300">{sym}{t.fill_price.toFixed(2)}</td>
                     <td className={[
                       'px-3 py-2 text-right font-mono',
                       isOpen ? 'text-gray-500' :
                         realized >= 0 ? 'text-emerald-400' : 'text-rose-400',
                     ].join(' ')}>
-                      {isOpen ? '—' : dollarSignedFmt(realized)}
+                      {isOpen ? '—' : signedMoneyFmt(realized, currency)}
                     </td>
                   </tr>
                 );
@@ -392,12 +494,12 @@ function RecentTrades({ data, loading }: { data: PaperTrade[]; loading: boolean 
   );
 }
 
-function RunMetadata({ run }: { run: PaperRunSummary }) {
+function RunMetadata({ run, currency }: { run: PaperRunSummary; currency: Currency }) {
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/40 px-4 py-3 text-xs text-gray-500">
       <span className="font-mono">run={run.run_id}</span> · universe={run.universe} · started {run.started_at.slice(0, 10)} ·
       first trade {run.first_trade_date} · last trade {run.last_trade_date} ·
-      starting cash {dollarFmt(run.starting_cash, 0)} · realized P&amp;L {run.final_realized_pnl != null ? dollarSignedFmt(run.final_realized_pnl) : '—'}
+      starting cash {moneyFmt(run.starting_cash, currency, 0)} · realized P&amp;L {run.final_realized_pnl != null ? signedMoneyFmt(run.final_realized_pnl, currency) : '—'}
     </div>
   );
 }

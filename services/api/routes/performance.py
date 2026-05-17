@@ -1,14 +1,57 @@
-"""Performance summary route."""
+"""Performance summary routes.
+
+  GET /performance/model/{universe}             — current production model snapshot
+  GET /performance/walkforward/{universe}       — tax-adjusted WF equity vs benchmark
+  GET /performance/{universe}                   — settled-prediction quality + equity curve
+
+Order matters: the static-prefix routes (model, walkforward) must be
+registered BEFORE the catch-all /{universe} or FastAPI will route
+'/performance/model' as universe='model'.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from services.api.deps import get_sqlite_conn
-from services.api.schemas import PerformanceResponse
-from services.api.services.predictions_service import get_performance
+from services.api.deps import get_duckdb_conn, get_sqlite_conn
+from services.api.schemas import (
+    ModelInfoResponse,
+    PerformanceResponse,
+    WalkforwardResponse,
+)
+from services.api.services.predictions_service import (
+    get_model_info,
+    get_performance,
+    get_walkforward_taxadjusted,
+)
 
 router = APIRouter(prefix="/performance", tags=["performance"])
+
+
+@router.get("/model/{universe}", response_model=ModelInfoResponse)
+def model_info(
+    universe: str,
+    duck=Depends(get_duckdb_conn),
+) -> ModelInfoResponse:
+    """Current production model metadata: training window, CV results, hyperparams."""
+    return get_model_info(duck, universe)
+
+
+@router.get("/walkforward/{universe}", response_model=WalkforwardResponse)
+def walkforward(
+    universe: str,
+    duck=Depends(get_duckdb_conn),
+) -> WalkforwardResponse:
+    """Tax-adjusted per-year equity curve from the walk-forward backtest,
+    compared to a buy-and-hold benchmark (SPY for US, NIFTYBEES for India).
+
+    Tax model:
+      - Strategy: STCG (25% US blended, 20% India) applied to net P&L each year.
+        5-day holds => all gains short-term.
+      - Benchmark: LTCG (15% US, 12.5% India) applied ONLY at terminal sale;
+        capital gains compound tax-deferred.
+    """
+    return get_walkforward_taxadjusted(duck, universe)
 
 
 @router.get("/{universe}", response_model=PerformanceResponse)
@@ -17,4 +60,5 @@ def performance(
     lookback_days: int = Query(90, ge=7, le=2000),
     sqlite=Depends(get_sqlite_conn),
 ) -> PerformanceResponse:
+    """Recent prediction-quality metrics (Sharpe, IC, decile spread, calibration)."""
     return get_performance(sqlite, universe, lookback_days)

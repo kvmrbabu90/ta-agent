@@ -105,6 +105,64 @@ export interface PerformanceResponse {
   ic_timeseries: ICPoint[];
 }
 
+// --- /performance/model/{universe} ------------------------------------------
+
+export interface ModelTargetInfo {
+  target: string; // 'regression' | 'classification'
+  model_id: string;
+  train_start: string; // YYYY-MM-DD
+  train_end: string;
+  n_features: number;
+  horizon_days: number;
+  learning_rate: number | null;
+  num_leaves: number | null;
+  min_data_in_leaf: number | null;
+  cv_mean_metrics: Record<string, number>;
+  cv_std_metrics: Record<string, number>;
+  cv_fold_count: number;
+}
+
+export interface ModelInfoResponse {
+  universe: string;
+  n_members: number;
+  training_rows: number | null;
+  training_symbols: number | null;
+  training_date_range: [string, string] | null;
+  targets: ModelTargetInfo[];
+}
+
+// --- /performance/walkforward/{universe} -------------------------------------
+
+export interface WalkforwardEquityPoint {
+  year: number;
+  strategy_return_pct: number;
+  strategy_aftertax_pct: number;
+  strategy_equity: number;
+  benchmark_return_pct: number;
+  benchmark_equity_pretax: number;
+  benchmark_equity_aftertax: number;
+}
+
+export interface WalkforwardSummary {
+  starting_capital: number;
+  strategy_final_pretax: number;
+  strategy_final_aftertax: number;
+  benchmark_final_pretax: number;
+  benchmark_final_aftertax: number;
+  outperformance_multiple: number;
+  strategy_stcg_rate: number;
+  benchmark_ltcg_rate: number;
+}
+
+export interface WalkforwardResponse {
+  universe: string;
+  benchmark_symbol: string;
+  benchmark_label: string;
+  currency: string; // 'USD' | 'INR'
+  years: WalkforwardEquityPoint[];
+  summary: WalkforwardSummary;
+}
+
 // --- Paper trading -----------------------------------------------------------
 
 export interface PaperRunSummary {
