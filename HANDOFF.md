@@ -382,6 +382,23 @@ data/processed/walkforward/
 
 ---
 
+## Backlog (post-current-version)
+
+Deferred until the current strict-WF ships:
+
+- **HMM regime detector** — experimental replacement for v2 threshold-based
+  bands. Hidden state = regime (calm/concern/stress/crisis), observations =
+  VIX/drawdown/SMA-200/etc. Prior literature suggests it won't beat the
+  threshold-based detector (Faber 2007, Whaley 1993) but worth a controlled
+  A/B as a feature, not a default. See conversation about Markov-chain
+  approaches.
+- **Pay-for survivorship-bias closure** — 249 truly defunct SP500 names
+  (Lehman, Ambac, Bear Stearns class) can't be recovered via yfinance.
+  CRSP/Sharadar/Norgate Data would fully close the gap. Currently a known
+  residual upward bias on returns.
+- **India regime gate** — current v2 uses US SPY+VIX. Building a NIFTY-50 /
+  INDIA-VIX-based version would let regime gating actually help India runs.
+
 ## Disclaimer
 
 This is a personal research project. Predictions and backtest results are
