@@ -224,7 +224,18 @@ def tune_hyperparameters(
         n_jobs=n_jobs,
     )
 
-    if not np.isfinite(study.best_value):
+    try:
+        best_val = study.best_value
+    except ValueError:
+        # No trial completed (e.g. CV splitter raised on every trial because
+        # train data is too small for the configured min_train_size_days).
+        # Falling back to base_config is safer than failing the whole retrain.
+        log.warning(
+            "Optuna: no trials completed — likely CV/data issue. "
+            "Returning base_config unchanged."
+        )
+        return base_config, study
+    if not np.isfinite(best_val):
         log.warning("Optuna found no finite-objective trial; returning base_config unchanged")
         return base_config, study
 

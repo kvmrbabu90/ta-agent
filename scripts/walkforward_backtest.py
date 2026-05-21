@@ -167,6 +167,7 @@ def _maybe_tune_at_retrain(
     embargo_days: int,
     optuna_n_jobs: int,
     study_name: str,
+    cv_min_train_days: int = 504,
 ) -> TrainConfig:
     """If per-retrain Optuna is enabled, run a tune restricted to ``df``
     (which only contains data up to the retrain's train_end). The returned
@@ -183,7 +184,7 @@ def _maybe_tune_at_retrain(
         n_folds=n_folds,
         horizon_days=horizon_days,
         embargo_days=embargo_days,
-        min_train_size_days=504,
+        min_train_size_days=cv_min_train_days,
     )
     best_cfg, _study = tune_hyperparameters(
         df, feature_cols, label_col, splitter, base_cfg,
@@ -207,6 +208,7 @@ def _train_models_through(
     per_retrain_optuna: bool = False,
     optuna_trials: int = 20,
     optuna_n_jobs: int = 1,
+    cv_min_train_days: int = 504,
 ) -> tuple[Any, Any, list[str], TrainConfig, TrainConfig]:
     """Train regression + (calibrated) classification models on data
     through `final_train_end`.
@@ -245,6 +247,7 @@ def _train_models_through(
         embargo_days=_EMBARGO_DAYS,
         optuna_n_jobs=optuna_n_jobs,
         study_name=f"wf_{universe}_reg_{final_train_end.isoformat()}",
+        cv_min_train_days=cv_min_train_days,
     )
     cls_cfg_used = _maybe_tune_at_retrain(
         df, feature_cols, f"fwd_quintile_{horizon_days}d", cls_cfg,
@@ -255,6 +258,7 @@ def _train_models_through(
         embargo_days=_EMBARGO_DAYS,
         optuna_n_jobs=optuna_n_jobs,
         study_name=f"wf_{universe}_cls_{final_train_end.isoformat()}",
+        cv_min_train_days=cv_min_train_days,
     )
 
     reg_booster, _ = train_final_model(
@@ -380,6 +384,7 @@ def run_walkforward(
     optuna_trials: int = 20,
     optuna_n_jobs: int = 1,
     device: str = "cpu",
+    cv_min_train_days: int = 504,
 ) -> dict:
     """Top-level entry. Returns a summary dict; report.json is written too."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -446,6 +451,7 @@ def run_walkforward(
                     per_retrain_optuna=per_retrain_optuna,
                     optuna_trials=optuna_trials,
                     optuna_n_jobs=optuna_n_jobs,
+                    cv_min_train_days=cv_min_train_days,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -580,6 +586,12 @@ def main() -> int:
         "--device", choices=["cpu", "gpu"], default="cpu",
         help="LightGBM device. 'gpu' requires a GPU-enabled LightGBM build.",
     )
+    p.add_argument(
+        "--cv-min-train-days", type=int, default=504,
+        help="Minimum training-fold size for purged walk-forward CV. "
+             "Default 504 (~2 years). Lower (e.g. 252) when the universe "
+             "has shorter history (e.g. NIFTY100 only goes back to 2014).",
+    )
     args = p.parse_args()
     end = args.end or (date.today() - timedelta(days=1))
     start = args.start or (end - timedelta(days=365 * 2))
@@ -593,6 +605,7 @@ def main() -> int:
             optuna_trials=args.optuna_trials,
             optuna_n_jobs=args.optuna_n_jobs,
             device=args.device,
+            cv_min_train_days=args.cv_min_train_days,
         )
     except Exception:  # noqa: BLE001
         log.error(f"walkforward crashed: {traceback.format_exc()}")
