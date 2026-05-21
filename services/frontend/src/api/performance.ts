@@ -2,8 +2,13 @@ import { apiGet } from './client';
 import type {
   ModelInfoResponse,
   PerformanceResponse,
+  StrictWfResponse,
   WalkforwardResponse,
 } from './types';
+
+export function fetchStrictWf(universe: string): Promise<StrictWfResponse> {
+  return apiGet<StrictWfResponse>(`/performance/strict-wf/${encodeURIComponent(universe)}`);
+}
 
 export function fetchPerformance(
   universe: string,

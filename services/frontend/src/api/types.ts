@@ -163,6 +163,48 @@ export interface WalkforwardResponse {
   summary: WalkforwardSummary;
 }
 
+// --- /performance/strict-wf/{universe} ---------------------------------------
+
+export interface StrictWfYearPoint {
+  year: number;
+  strategy_return_pct: number;
+  benchmark_return_pct: number | null;
+  excess_pct: number | null;
+  sharpe: number | null;
+  max_dd_pct: number | null;
+  n_days: number;
+}
+
+export interface StrictWfSummary {
+  starting_capital: number;
+  strategy_cum_return_pct: number;
+  benchmark_cum_return_pct: number;
+  strategy_annualized_pct: number;
+  benchmark_annualized_pct: number;
+  n_years: number;
+  strategy_multiple: number;
+}
+
+export interface StrictWfProgress {
+  retrains_complete: number;
+  retrains_total: number;
+  last_retrain_date: string | null;
+  last_retrain_at_utc: string | null;
+  avg_retrain_minutes: number | null;
+  eta_completion_utc: string | null;
+  is_running: boolean;
+}
+
+export interface StrictWfResponse {
+  universe: string;
+  benchmark_symbol: string;
+  benchmark_label: string;
+  currency: string;
+  progress: StrictWfProgress;
+  years: StrictWfYearPoint[];
+  summary: StrictWfSummary;
+}
+
 // --- Paper trading -----------------------------------------------------------
 
 export interface PaperRunSummary {

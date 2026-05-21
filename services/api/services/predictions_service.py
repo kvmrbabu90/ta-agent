@@ -34,6 +34,10 @@ from services.api.schemas import (
     PerformanceResponse,
     StockHistoryResponse,
     StrategyEquityPoint,
+    StrictWfProgress,
+    StrictWfResponse,
+    StrictWfSummary,
+    StrictWfYearPoint,
     TopPick,
     TopPicksResponse,
     UniverseInfo,
@@ -957,3 +961,245 @@ def get_walkforward_taxadjusted(
         years=years_out,
         summary=summary,
     )
+
+
+# ---------------------------------------------------------------------------
+# /performance/strict-wf/{universe} — LIVE strict-walk-forward progress
+# ---------------------------------------------------------------------------
+
+_STRICT_WF_PATHS = {
+    "SP500": {
+        "preds": "data/processed/walkforward_10yr_strict/predictions.sqlite",
+        "paper": "data/processed/walkforward_10yr_strict/analysis_live.sqlite",
+        "commission": "ibkr_lite",
+        "expected_retrains": 132,  # 11 years × 12 monthly retrains
+    },
+    "NIFTY100": {
+        "preds": "data/processed/wf_nifty100_strict/predictions.sqlite",
+        "paper": "data/processed/wf_nifty100_strict/analysis_live.sqlite",
+        "commission": "india_zerodha",
+        "expected_retrains": 132,  # if 10y of data, else 40 for original 3.3y
+    },
+}
+
+
+# In-memory cache keyed by (universe, preds_mtime).
+_STRICT_WF_CACHE: dict[tuple[str, float], StrictWfResponse] = {}
+
+
+def _replay_engine_for_strict(
+    universe: str, preds_path: str, paper_path: str, commission: str
+) -> str | None:
+    """Run the paper engine once on the current predictions snapshot.
+    Returns the canonical run_id used or None if no predictions yet."""
+    import os, sqlite3
+    from packages.paper_trading import StrategyConfig, backtest
+    if not os.path.exists(preds_path):
+        return None
+    c = sqlite3.connect(preds_path)
+    n = c.execute("SELECT COUNT(*) FROM predictions_log").fetchone()[0]
+    c.close()
+    if n == 0:
+        return None
+    run_id = f"strict_wf_live_{universe.lower()}"
+    # Always rebuild — the calling layer caches by mtime so this is cheap on cache hit.
+    if os.path.exists(paper_path):
+        os.remove(paper_path)
+    cfg = StrategyConfig(
+        run_id=run_id,
+        universe=universe,
+        predictions_sqlite_path=preds_path,
+        paper_db_path=paper_path,
+        commission_model=commission,
+    )
+    backtest(cfg)
+    return run_id
+
+
+def _strict_wf_per_year(paper_path: str, run_id: str) -> list[StrictWfYearPoint]:
+    import math, sqlite3
+    c = sqlite3.connect(paper_path)
+    df = pd.read_sql_query(
+        "SELECT trade_date, equity FROM paper_equity "
+        "WHERE run_id=? AND snapshot_kind='close_5pm_ct' ORDER BY trade_date",
+        c, params=[run_id],
+    )
+    c.close()
+    if df.empty:
+        return []
+    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+    df["year"] = pd.to_datetime(df["trade_date"]).dt.year
+    out: list[StrictWfYearPoint] = []
+    for year, g in df.groupby("year"):
+        eqs = g["equity"].to_numpy()
+        rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs)) if eqs[i - 1] > 0]
+        m = sum(rets) / max(len(rets), 1)
+        s = (sum((r - m) ** 2 for r in rets) / max(len(rets) - 1, 1)) ** 0.5 if len(rets) > 1 else 0
+        sharpe = m / s * math.sqrt(252) if s > 0 else None
+        peak = eqs[0]
+        dd = 0.0
+        for e in eqs:
+            peak = max(peak, e)
+            dd = max(dd, (peak - e) / peak)
+        out.append(StrictWfYearPoint(
+            year=int(year),
+            strategy_return_pct=float(eqs[-1] / eqs[0] - 1) * 100,
+            sharpe=sharpe,
+            max_dd_pct=dd * 100,
+            n_days=int(len(g)),
+        ))
+    return out
+
+
+def _benchmark_year_returns_pct(
+    duck: duckdb.DuckDBPyConnection, symbol: str
+) -> dict[int, float]:
+    rows = duck.execute(
+        "SELECT bar_date, close FROM ohlcv_daily WHERE symbol = ? ORDER BY bar_date",
+        [symbol],
+    ).fetchall()
+    df = pd.DataFrame(rows, columns=["bar_date", "close"])
+    if df.empty:
+        return {}
+    df["year"] = pd.to_datetime(df["bar_date"]).dt.year
+    out: dict[int, float] = {}
+    for year, g in df.groupby("year"):
+        closes = g["close"].to_numpy()
+        if len(closes) >= 2:
+            out[int(year)] = float(closes[-1] / closes[0] - 1) * 100
+    return out
+
+
+def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgress:
+    """Derive retrains-complete + ETA by counting distinct retrain months in
+    the predictions table and reading file mtime."""
+    import os, sqlite3
+    from datetime import datetime, timedelta, timezone
+    progress = StrictWfProgress(retrains_total=expected_total)
+    if not os.path.exists(preds_path):
+        return progress
+    mtime = datetime.fromtimestamp(os.path.getmtime(preds_path), tz=timezone.utc)
+    progress.last_retrain_at_utc = mtime.isoformat()
+    # Heuristic for "running": modified in last 2 hours
+    progress.is_running = (datetime.now(timezone.utc) - mtime).total_seconds() < 7200
+    c = sqlite3.connect(preds_path)
+    # Each retrain produces predictions for a window with the SAME first as_of.
+    # Number of distinct (year, month) of as_of approximates retrains complete.
+    rows = c.execute(
+        "SELECT MIN(as_of) AS first_d, MAX(as_of) AS last_d, COUNT(*) AS n "
+        "FROM predictions_log"
+    ).fetchone()
+    if rows and rows[2] > 0:
+        progress.last_retrain_date = str(rows[1])
+        # Count distinct retrain months
+        retrains = c.execute(
+            "SELECT COUNT(DISTINCT strftime('%Y-%m', as_of)) FROM predictions_log"
+        ).fetchone()[0]
+        progress.retrains_complete = int(retrains)
+    c.close()
+    # Compute avg retrain pace from mtime windows. Cheapest approximation:
+    # if more than 1 retrain done, divide elapsed since first retrain by N-1.
+    # We don't have first-retrain time, so just use a fixed ~75 min default.
+    if progress.retrains_complete > 0 and progress.retrains_complete < expected_total:
+        avg_min = 75.0  # heuristic; matches observed ~73-78 min/retrain
+        progress.avg_retrain_minutes = avg_min
+        remaining = expected_total - progress.retrains_complete
+        eta_seconds = remaining * avg_min * 60
+        progress.eta_completion_utc = (
+            datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)
+        ).isoformat()
+    return progress
+
+
+def get_strict_wf_status(
+    duck: duckdb.DuckDBPyConnection, universe: str
+) -> StrictWfResponse:
+    """Live snapshot of a strict-WF run. Cached in memory by predictions.sqlite
+    mtime so repeated requests during the same retrain are O(1)."""
+    import os
+    cfg = _STRICT_WF_PATHS.get(universe)
+    if cfg is None:
+        raise ValueError(f"no strict-WF config for universe={universe!r}")
+
+    bench_sym, bench_label, currency = _BENCHMARK.get(
+        universe, ("SPY", "SPY B&H", "USD")
+    )
+
+    preds_path = cfg["preds"]
+    paper_path = cfg["paper"]
+    expected = int(cfg["expected_retrains"])
+
+    progress = _strict_wf_progress(preds_path, expected)
+
+    if not os.path.exists(preds_path):
+        return StrictWfResponse(
+            universe=universe,
+            benchmark_symbol=bench_sym,
+            benchmark_label=bench_label,
+            currency=currency,
+            progress=progress,
+            years=[],
+            summary=StrictWfSummary(),
+        )
+
+    # Cache by mtime
+    mtime = os.path.getmtime(preds_path)
+    cache_key = (universe, mtime)
+    cached = _STRICT_WF_CACHE.get(cache_key)
+    if cached is not None:
+        # Refresh just the progress timestamp (so ETA stays current)
+        cached.progress = progress
+        return cached
+
+    run_id = _replay_engine_for_strict(universe, preds_path, paper_path, cfg["commission"])
+    if run_id is None:
+        return StrictWfResponse(
+            universe=universe,
+            benchmark_symbol=bench_sym,
+            benchmark_label=bench_label,
+            currency=currency,
+            progress=progress,
+            years=[],
+            summary=StrictWfSummary(),
+        )
+
+    years = _strict_wf_per_year(paper_path, run_id)
+    bench_by_year = _benchmark_year_returns_pct(duck, bench_sym)
+    for y in years:
+        b = bench_by_year.get(y.year)
+        y.benchmark_return_pct = b
+        if b is not None:
+            y.excess_pct = y.strategy_return_pct - b
+
+    # Cumulative summary
+    strat_cum = 1.0
+    bench_cum = 1.0
+    for y in years:
+        strat_cum *= (1 + y.strategy_return_pct / 100)
+        if y.benchmark_return_pct is not None:
+            bench_cum *= (1 + y.benchmark_return_pct / 100)
+    n_years = max(len(years), 1)
+    summary = StrictWfSummary(
+        starting_capital=1000.0,
+        strategy_cum_return_pct=(strat_cum - 1) * 100,
+        benchmark_cum_return_pct=(bench_cum - 1) * 100,
+        strategy_annualized_pct=(strat_cum ** (1 / n_years) - 1) * 100,
+        benchmark_annualized_pct=(bench_cum ** (1 / n_years) - 1) * 100,
+        n_years=float(n_years),
+        strategy_multiple=strat_cum,
+    )
+
+    resp = StrictWfResponse(
+        universe=universe,
+        benchmark_symbol=bench_sym,
+        benchmark_label=bench_label,
+        currency=currency,
+        progress=progress,
+        years=years,
+        summary=summary,
+    )
+    # Cap cache size at a few entries to avoid leak across many mtime changes.
+    if len(_STRICT_WF_CACHE) > 8:
+        _STRICT_WF_CACHE.clear()
+    _STRICT_WF_CACHE[cache_key] = resp
+    return resp

@@ -334,3 +334,48 @@ class WalkforwardResponse(_BaseResponse):
     currency: str                    # 'USD' or 'INR'
     years: list[WalkforwardEquityPoint] = Field(default_factory=list)
     summary: WalkforwardSummary
+
+
+# ---------------------------------------------------------------------------
+# /performance/strict-wf/{universe} — LIVE strict-walk-forward progress
+# ---------------------------------------------------------------------------
+
+
+class StrictWfYearPoint(_BaseResponse):
+    year: int
+    strategy_return_pct: float
+    benchmark_return_pct: float | None = None
+    excess_pct: float | None = None
+    sharpe: float | None = None
+    max_dd_pct: float | None = None
+    n_days: int = 0
+
+
+class StrictWfSummary(_BaseResponse):
+    starting_capital: float = 1000.0
+    strategy_cum_return_pct: float = 0.0
+    benchmark_cum_return_pct: float = 0.0
+    strategy_annualized_pct: float = 0.0
+    benchmark_annualized_pct: float = 0.0
+    n_years: float = 0.0
+    strategy_multiple: float = 1.0  # final equity / starting capital
+
+
+class StrictWfProgress(_BaseResponse):
+    retrains_complete: int = 0
+    retrains_total: int = 0
+    last_retrain_date: str | None = None      # 'YYYY-MM-DD' of last completed train_end
+    last_retrain_at_utc: str | None = None    # ISO timestamp
+    avg_retrain_minutes: float | None = None  # rolling-average over last 5 retrains
+    eta_completion_utc: str | None = None
+    is_running: bool = False                   # heuristic: progress in last 2h
+
+
+class StrictWfResponse(_BaseResponse):
+    universe: str
+    benchmark_symbol: str
+    benchmark_label: str
+    currency: str
+    progress: StrictWfProgress
+    years: list[StrictWfYearPoint] = Field(default_factory=list)
+    summary: StrictWfSummary

@@ -17,11 +17,13 @@ from services.api.deps import get_duckdb_conn, get_sqlite_conn
 from services.api.schemas import (
     ModelInfoResponse,
     PerformanceResponse,
+    StrictWfResponse,
     WalkforwardResponse,
 )
 from services.api.services.predictions_service import (
     get_model_info,
     get_performance,
+    get_strict_wf_status,
     get_walkforward_taxadjusted,
 )
 
@@ -35,6 +37,17 @@ def model_info(
 ) -> ModelInfoResponse:
     """Current production model metadata: training window, CV results, hyperparams."""
     return get_model_info(duck, universe)
+
+
+@router.get("/strict-wf/{universe}", response_model=StrictWfResponse)
+def strict_wf(
+    universe: str,
+    duck=Depends(get_duckdb_conn),
+) -> StrictWfResponse:
+    """Live status of the strict (per-retrain Optuna, no look-ahead) WF.
+    Polls predictions.sqlite mtime + count; returns per-year metrics +
+    progress + ETA. Cached in-memory by file mtime."""
+    return get_strict_wf_status(duck, universe)
 
 
 @router.get("/walkforward/{universe}", response_model=WalkforwardResponse)

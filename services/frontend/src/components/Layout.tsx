@@ -1,4 +1,4 @@
-import { Activity, LayoutDashboard, LineChart, Wallet, Settings, RefreshCw } from 'lucide-react';
+import { Activity, LayoutDashboard, LineChart, Wallet, Settings, RefreshCw, Radio } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSystemStatus } from '@/hooks/useSystemStatus';
@@ -129,6 +129,10 @@ export function Layout({ children }: LayoutProps) {
               <NavLink to="/performance" className={navLinkClass}>
                 <LineChart className="h-4 w-4" />
                 Performance
+              </NavLink>
+              <NavLink to="/live-wf" className={navLinkClass}>
+                <Radio className="h-4 w-4" />
+                Live WF
               </NavLink>
               <NavLink to="/paper" className={navLinkClass}>
                 <Wallet className="h-4 w-4" />
