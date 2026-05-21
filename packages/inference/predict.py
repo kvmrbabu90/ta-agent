@@ -50,14 +50,26 @@ def _align_features(
     panel: pd.DataFrame, feature_cols: list[str], *, model_label: str
 ) -> pd.DataFrame:
     """Return a (n, len(feature_cols)) matrix in the model's expected order.
-    Raises ValueError if any required feature is missing."""
+    Raises ValueError if any required feature is missing.
+
+    Dtype-coerces any ``object``-dtype column to float64 (NaN on failure).
+    This catches the NIFTY100 case where a universe has NO data for some
+    optional adapter (e.g. earnings on NSE): build_feature_matrix returns
+    Python ``None`` → object dtype, which LightGBM rejects, even though
+    the equivalent training-parquet path stores them as float NaN. NaN is
+    a valid missing-value sentinel for LightGBM.
+    """
     missing = [c for c in feature_cols if c not in panel.columns]
     if missing:
         raise ValueError(
             f"feature matrix missing {len(missing)} required column(s) for "
             f"{model_label}: {missing[:10]}{'…' if len(missing) > 10 else ''}"
         )
-    return panel[feature_cols].copy()
+    out = panel[feature_cols].copy()
+    obj_cols = [c for c in feature_cols if out[c].dtype == object]
+    for c in obj_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
 
 
 def build_inference_features(
