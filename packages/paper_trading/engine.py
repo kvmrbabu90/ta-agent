@@ -226,11 +226,19 @@ class StrategyConfig:
     #               for future regimes where ATR might shine — e.g. a
     #               longer-horizon strategy.
     stop_mode: str = "support"
+    # support_lookback_days=3 and stop_buffer_pct=0.003 are LITERATURE-
+    # standard defaults for short-horizon mean-reversion stops (Connors-
+    # style 2-5 day lookbacks, 30-50 bps buffers).
+    #
+    # An earlier optimize_stop_loss.py run on WF data also picked N=3 /
+    # buf=0.003 as the Sharpe-optimal in a grid, but that run had access
+    # to data inside the strict-WF period — so the optimization itself
+    # was contaminated. We KEEP these specific values not because of that
+    # optimization, but because they sit within the well-documented
+    # literature range and they're conservative (tighter than published
+    # convention). They are NOT to be re-tuned on data that overlaps the
+    # strict-WF window without invalidating the WF.
     support_lookback_days: int = 3
-    # Honest WF wide-grid optimum (scripts/optimize_stop_loss.py --grid wide
-    # on WF DB, 2024-05 → 2026-05): N=3, buf=0.003 yields Sharpe 2.135 vs
-    # the prior 2.019 at buf=0.005. Stayed at N=3 rather than corner N=1
-    # to avoid the degenerate 1-day-trailing-stop optimum.
     stop_buffer_pct: float = 0.003
     atr_lookback_days: int = 14  # Wilder's standard (unused unless stop_mode='atr')
     atr_multiplier: float = 2.0
@@ -540,7 +548,14 @@ def _rolling_low(
     on_date: date,
     lookback_days: int,
 ) -> float | None:
-    """Lowest `low` over the prior `lookback_days` bars (inclusive of on_date).
+    """Lowest `low` over the `lookback_days` bars STRICTLY BEFORE on_date.
+
+    Critical: must be `< on_date`, NOT `<= on_date`. At ~8:30 AM ET when we
+    open a lot, the entry day's `low` isn't yet known (only finalizes at
+    close). Including the entry-day low in the support computation is a
+    look-ahead bug — the engine would set stops that "know" the day's
+    intraday low. Fixed 2026-05-21 after finding the bug during the
+    strict WF audit.
 
     `bars_by_sym[symbol]` is a list of (bar_date, low) tuples sorted by date.
     Returns None if we don't have any bars in the window.
@@ -548,9 +563,7 @@ def _rolling_low(
     seq = bars_by_sym.get(symbol)
     if not seq:
         return None
-    # Find the index of the last bar with bar_date <= on_date.
-    # Binary-search would be ideal but the lists are short enough.
-    lows = [low for d, low in seq if d <= on_date and not pd.isna(low)]
+    lows = [low for d, low in seq if d < on_date and not pd.isna(low)]
     if not lows:
         return None
     window = lows[-lookback_days:]
@@ -665,10 +678,12 @@ def _rolling_atr(
     seq = hlc_by_sym.get(symbol)
     if not seq:
         return None
+    # Strict inequality: entry-day H/L/C aren't yet known at 8:30 AM when
+    # stops are set. Including them = look-ahead. Fixed 2026-05-21.
     valid = [
         (d, h, low, c)
         for d, h, low, c in seq
-        if d <= on_date
+        if d < on_date
         and h is not None
         and low is not None
         and c is not None
