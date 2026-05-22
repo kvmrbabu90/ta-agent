@@ -1125,6 +1125,16 @@ _STRICT_WF_TAX_RATES = {"SP500": 0.30, "NIFTY100": 0.15}
 #   NIFTY100 → 12.5% (India LTCG on listed equity).
 _STRICT_WF_BENCH_LTCG = {"SP500": 0.15, "NIFTY100": 0.125}
 
+# Display starting capital per universe. The paper-engine simulates at
+# $1,000 base regardless; we rescale the equity series on the way out
+# so the UI shows realistic local-currency amounts:
+#   SP500    → $1,000
+#   NIFTY100 → ₹1,00,000 (1 lakh)
+# Returns/multiples/%s are invariant to starting capital so they don't
+# need touching — only the absolute equity series and starting_capital
+# tile value get scaled.
+_STRICT_WF_STARTING_CAPITAL = {"SP500": 1000.0, "NIFTY100": 100_000.0}
+
 
 def _strict_max_trade_date(paper_path: str, run_id: str):
     """Return the latest trade_date in paper_equity for ``run_id`` as a
@@ -1453,6 +1463,27 @@ def get_strict_wf_status(
     equity_curve = _strict_build_equity_curve(
         universe, paper_path, run_id, duck, bench_sym
     )
+
+    # Display-only rescale to the configured starting capital. Done at
+    # the very end so internal compounding math stays on the $1,000 base
+    # the paper engine simulates with.
+    target_capital = _STRICT_WF_STARTING_CAPITAL.get(universe, 1000.0)
+    if target_capital != 1000.0 and equity_curve.equity_pre_tax:
+        scale = target_capital / 1000.0
+        summary.starting_capital = target_capital
+        equity_curve.equity_pre_tax = [
+            round(v * scale, 2) for v in equity_curve.equity_pre_tax
+        ]
+        equity_curve.equity_post_tax = [
+            round(v * scale, 2) for v in equity_curve.equity_post_tax
+        ]
+        equity_curve.benchmark_equity = [
+            round(v * scale, 2) for v in equity_curve.benchmark_equity
+        ]
+        if equity_curve.benchmark_post_ltcg_endpoint is not None:
+            equity_curve.benchmark_post_ltcg_endpoint = round(
+                equity_curve.benchmark_post_ltcg_endpoint * scale, 2
+            )
 
     resp = StrictWfResponse(
         universe=universe,

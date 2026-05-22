@@ -100,7 +100,12 @@ function UniverseSection({
         />
       ) : (
         <>
-          <EquityCurveChart curve={data.equity_curve} benchKey={data.benchmark_symbol} />
+          <EquityCurveChart
+            curve={data.equity_curve}
+            benchKey={data.benchmark_symbol}
+            currency={data.currency}
+            startingCapital={data.summary.starting_capital}
+          />
           <YearTable years={data.years} benchKey={data.benchmark_symbol} />
         </>
       )}
@@ -244,12 +249,27 @@ function Tile({
   );
 }
 
+// Format a monetary amount using the universe's currency convention.
+// USD: $1,000 (US grouping). INR: ₹1,00,000 (Indian lakh/crore grouping).
+function fmtMoney(amount: number, currency: string): string {
+  if (currency === 'INR') {
+    // en-IN locale gives "1,00,000" grouping; symbol is rupee.
+    return `₹${Math.round(amount).toLocaleString('en-IN')}`;
+  }
+  // Default USD/most Western: thousands separator.
+  return `$${Math.round(amount).toLocaleString('en-US')}`;
+}
+
 function EquityCurveChart({
   curve,
   benchKey,
+  currency,
+  startingCapital,
 }: {
   curve: StrictWfEquityCurve;
   benchKey: string;
+  currency: string;
+  startingCapital: number;
 }) {
   if (!curve || !curve.dates || curve.dates.length === 0) {
     return null;
@@ -285,7 +305,8 @@ function EquityCurveChart({
       <div className="mb-2 flex items-baseline justify-between">
         <div className="text-[11px] uppercase tracking-wider text-gray-500">Equity curve</div>
         <div className="text-[11px] text-gray-500">
-          starts at <span className="font-mono text-gray-300">$1,000</span> ·{' '}
+          starts at{' '}
+          <span className="font-mono text-gray-300">{fmtMoney(startingCapital, currency)}</span> ·{' '}
           <span className="text-emerald-400">pre-tax</span>
           {hasPostTax ? (
             <>
@@ -327,7 +348,7 @@ function EquityCurveChart({
                 color: '#e5e7eb',
               }}
               formatter={(v: number | string) =>
-                typeof v === 'number' ? v.toFixed(2) : v
+                typeof v === 'number' ? fmtMoney(v, currency) : v
               }
             />
             <Line
@@ -375,7 +396,7 @@ function EquityCurveChart({
                 ifOverflow="extendDomain"
               >
                 <Label
-                  value={`post-LTCG ${benchPostLtcg.toFixed(2)}`}
+                  value={`post-LTCG ${fmtMoney(benchPostLtcg, currency)}`}
                   position="left"
                   offset={10}
                   fill={CHART_BLUE}
