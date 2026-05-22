@@ -1308,6 +1308,80 @@ def _strict_build_equity_curve(
     )
 
 
+def _strict_monthly_excess(
+    paper_path: str,
+    run_id: str,
+    duck: duckdb.DuckDBPyConnection,
+    bench_sym: str,
+) -> list["StrictWfMonthlyExcessCell"]:
+    """Per-(year,month) strategy/benchmark/excess returns for the heatmap.
+
+    For each month, return = (last_close_of_month / first_close_of_month) - 1.
+    This is the conventional "what was this month's return" view; not the
+    prior-month-anchored compound used by the cum tile. The heatmap cells
+    therefore don't compound to match the cum number — but each cell is a
+    standalone, intuitive monthly performance figure.
+    """
+    import os
+    import sqlite3
+    from services.api.schemas import StrictWfMonthlyExcessCell
+
+    if not os.path.exists(paper_path):
+        return []
+    try:
+        c = sqlite3.connect(paper_path)
+        rows = c.execute(
+            "SELECT trade_date, equity FROM paper_equity "
+            "WHERE run_id=? AND snapshot_kind='close_5pm_ct' ORDER BY trade_date",
+            [run_id],
+        ).fetchall()
+        c.close()
+    except sqlite3.Error:
+        return []
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows, columns=["trade_date", "equity"])
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    df["ym"] = df["trade_date"].dt.to_period("M")
+    strat = df.groupby("ym").agg(
+        first=("equity", "first"), last=("equity", "last")
+    )
+    strat["ret"] = (strat["last"] / strat["first"] - 1) * 100
+
+    # Benchmark over the same range.
+    first_d = df["trade_date"].min().date()
+    last_d = df["trade_date"].max().date()
+    bench_rows = duck.execute(
+        "SELECT bar_date, close FROM ohlcv_daily WHERE symbol = ? "
+        "AND bar_date BETWEEN ? AND ? ORDER BY bar_date",
+        [bench_sym, first_d, last_d],
+    ).fetchall()
+    bench_by_ym: dict = {}
+    if bench_rows:
+        bdf = pd.DataFrame(bench_rows, columns=["bar_date", "close"])
+        bdf["bar_date"] = pd.to_datetime(bdf["bar_date"])
+        bdf["ym"] = bdf["bar_date"].dt.to_period("M")
+        bg = bdf.groupby("ym").agg(first=("close", "first"), last=("close", "last"))
+        bg["ret"] = (bg["last"] / bg["first"] - 1) * 100
+        bench_by_ym = bg["ret"].to_dict()
+
+    out: list[StrictWfMonthlyExcessCell] = []
+    for ym, row in strat.iterrows():
+        s_ret = float(row["ret"])
+        b_ret = bench_by_ym.get(ym)
+        b_ret_f = float(b_ret) if b_ret is not None else None
+        excess = s_ret - b_ret_f if b_ret_f is not None else None
+        out.append(StrictWfMonthlyExcessCell(
+            year=int(ym.year),
+            month=int(ym.month),
+            strategy_pct=s_ret,
+            benchmark_pct=b_ret_f,
+            excess_pct=excess,
+        ))
+    return out
+
+
 def _strict_cum_after_tax_multiple(
     universe: str, max_d, years: list[StrictWfYearPoint]
 ) -> float | None:
@@ -1448,6 +1522,7 @@ def get_strict_wf_status(
     equity_curve = _strict_build_equity_curve(
         universe, paper_path, run_id, duck, bench_sym
     )
+    monthly_excess = _strict_monthly_excess(paper_path, run_id, duck, bench_sym)
 
     # Display-only rescale to the configured starting capital. Done at
     # the very end so internal compounding math stays on the $1,000 base
@@ -1479,6 +1554,7 @@ def get_strict_wf_status(
         years=years,
         summary=summary,
         equity_curve=equity_curve,
+        monthly_excess=monthly_excess,
     )
     # Cap cache size at a few entries to avoid leak across many mtime changes.
     if len(_STRICT_WF_CACHE) > 8:

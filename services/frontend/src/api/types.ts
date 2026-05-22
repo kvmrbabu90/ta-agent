@@ -196,6 +196,14 @@ export interface StrictWfSummary {
   strategy_multiple: number;
 }
 
+export interface StrictWfMonthlyExcessCell {
+  year: number;
+  month: number; // 1..12
+  strategy_pct: number | null;
+  benchmark_pct: number | null;
+  excess_pct: number | null;
+}
+
 export interface StrictWfEquityCurve {
   dates: string[];
   equity_pre_tax: number[];
@@ -226,6 +234,7 @@ export interface StrictWfResponse {
   years: StrictWfYearPoint[];
   summary: StrictWfSummary;
   equity_curve: StrictWfEquityCurve;
+  monthly_excess: StrictWfMonthlyExcessCell[];
 }
 
 // --- Paper trading -----------------------------------------------------------

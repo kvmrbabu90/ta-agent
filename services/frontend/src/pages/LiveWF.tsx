@@ -13,7 +13,12 @@ import { useStrictWf } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
-import type { StrictWfEquityCurve, StrictWfResponse, StrictWfYearPoint } from '@/api/types';
+import type {
+  StrictWfEquityCurve,
+  StrictWfMonthlyExcessCell,
+  StrictWfResponse,
+  StrictWfYearPoint,
+} from '@/api/types';
 import { CHART_BLUE, CHART_GREEN } from '@/utils/colors';
 
 function pctFmt(v: number | null | undefined, signed = false, decimals = 2): string {
@@ -103,6 +108,10 @@ function UniverseSection({
             benchKey={data.benchmark_symbol}
             currency={data.currency}
             startingCapital={data.summary.starting_capital}
+          />
+          <MonthlyExcessHeatmap
+            cells={data.monthly_excess}
+            benchKey={data.benchmark_symbol}
           />
           <YearTable years={data.years} benchKey={data.benchmark_symbol} />
         </>
@@ -404,6 +413,125 @@ function EquityCurveChart({
             )}
           </LineChart>
         </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function MonthlyExcessHeatmap({
+  cells,
+  benchKey,
+}: {
+  cells: StrictWfMonthlyExcessCell[];
+  benchKey: string;
+}) {
+  if (!cells || cells.length === 0) return null;
+
+  // Build a (year, month) → cell index so we can render the grid even
+  // when some cells are missing (e.g. partial first/last year).
+  const cellByYM = new Map<string, StrictWfMonthlyExcessCell>();
+  let minYear = Infinity;
+  let maxYear = -Infinity;
+  for (const c of cells) {
+    cellByYM.set(`${c.year}-${c.month}`, c);
+    if (c.year < minYear) minYear = c.year;
+    if (c.year > maxYear) maxYear = c.year;
+  }
+  const years: number[] = [];
+  for (let y = minYear; y <= maxYear; y++) years.push(y);
+
+  // Magnitude scale: |excess|=10% → opacity 1.0; clamp.
+  const MAX_MAG = 10;
+
+  function cellBg(excess: number | null | undefined): string {
+    if (excess == null || Number.isNaN(excess)) return 'transparent';
+    const mag = Math.min(Math.abs(excess) / MAX_MAG, 1);
+    if (excess > 0) {
+      // emerald-500 #10b981, with alpha scaled by mag
+      return `rgba(16, 185, 129, ${(0.15 + 0.85 * mag).toFixed(2)})`;
+    }
+    if (excess < 0) {
+      // rose-500 #f43f5e
+      return `rgba(244, 63, 94, ${(0.15 + 0.85 * mag).toFixed(2)})`;
+    }
+    return 'rgba(107, 114, 128, 0.2)';
+  }
+
+  function cellText(excess: number | null | undefined): string {
+    if (excess == null || Number.isNaN(excess)) return '—';
+    const sign = excess >= 0 ? '+' : '';
+    return `${sign}${excess.toFixed(1)}`;
+  }
+
+  function cellTooltip(cell: StrictWfMonthlyExcessCell | undefined): string {
+    if (!cell) return '';
+    const s = cell.strategy_pct != null ? `${cell.strategy_pct.toFixed(2)}%` : '—';
+    const b = cell.benchmark_pct != null ? `${cell.benchmark_pct.toFixed(2)}%` : '—';
+    const e = cell.excess_pct != null ? `${cell.excess_pct.toFixed(2)}%` : '—';
+    return `${cell.year}-${String(cell.month).padStart(2, '0')}\nStrategy: ${s}\n${benchKey}: ${b}\nExcess:   ${e}`;
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500">
+          Monthly excess vs {benchKey} (Strategy − {benchKey}, %)
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+          <span>−10%</span>
+          <span
+            className="h-2 w-24 rounded"
+            style={{
+              background:
+                'linear-gradient(to right, rgba(244,63,94,1), rgba(244,63,94,0.15), rgba(107,114,128,0.2), rgba(16,185,129,0.15), rgba(16,185,129,1))',
+            }}
+          />
+          <span>+10%</span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full border-separate" style={{ borderSpacing: 2 }}>
+          <thead>
+            <tr>
+              <th className="w-12 text-left text-[10px] font-medium uppercase tracking-wider text-gray-500"></th>
+              {MONTH_ABBREV.map((m) => (
+                <th
+                  key={m}
+                  className="px-1 text-center text-[10px] font-medium uppercase tracking-wider text-gray-500"
+                >
+                  {m}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {years.map((y) => (
+              <tr key={y}>
+                <td className="w-12 pr-2 text-right font-mono text-xs text-gray-300">
+                  {y}
+                </td>
+                {MONTH_ABBREV.map((_, idx) => {
+                  const month = idx + 1;
+                  const cell = cellByYM.get(`${y}-${month}`);
+                  return (
+                    <td
+                      key={month}
+                      title={cellTooltip(cell)}
+                      className="h-7 min-w-[44px] rounded text-center font-mono text-[10px] text-gray-100"
+                      style={{
+                        backgroundColor: cellBg(cell?.excess_pct),
+                      }}
+                    >
+                      {cellText(cell?.excess_pct)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

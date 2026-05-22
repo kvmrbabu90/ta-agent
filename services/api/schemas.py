@@ -391,6 +391,23 @@ class StrictWfProgress(_BaseResponse):
     is_running: bool = False                   # heuristic: progress in last 2h
 
 
+class StrictWfMonthlyExcessCell(_BaseResponse):
+    """One (year, month) cell of the monthly excess heatmap.
+
+    All three pct fields use the convention:
+        ret = (last_close_of_month / first_close_of_month) - 1
+    so they're directly comparable. ``excess_pct`` is the strategy
+    minus the benchmark for that calendar month. Months where either
+    leg has no data are omitted entirely from the list.
+    """
+
+    year: int
+    month: int  # 1..12
+    strategy_pct: float | None = None
+    benchmark_pct: float | None = None
+    excess_pct: float | None = None
+
+
 class StrictWfEquityCurve(_BaseResponse):
     """Columnar equity time series for the Live WF chart.
 
@@ -428,3 +445,4 @@ class StrictWfResponse(_BaseResponse):
     years: list[StrictWfYearPoint] = Field(default_factory=list)
     summary: StrictWfSummary
     equity_curve: StrictWfEquityCurve = Field(default_factory=StrictWfEquityCurve)
+    monthly_excess: list[StrictWfMonthlyExcessCell] = Field(default_factory=list)
