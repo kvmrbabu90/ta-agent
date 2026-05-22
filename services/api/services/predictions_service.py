@@ -1114,6 +1114,46 @@ def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgres
     return progress
 
 
+# Tax rates used by the Live WF year table (display-only — the pre-tax
+# pipeline is unchanged). 30% blanket US short-term, 15% India short-term.
+_STRICT_WF_TAX_RATES = {"SP500": 0.30, "NIFTY100": 0.15}
+
+
+def _strict_apply_tax(
+    universe: str, paper_path: str, run_id: str, years: list[StrictWfYearPoint]
+) -> None:
+    """Set strategy_return_after_tax_pct on years whose calendar year has
+    fully elapsed in the WF data; leave it None for the in-progress year."""
+    import os
+    import sqlite3
+    from datetime import date as _date
+
+    rate = _STRICT_WF_TAX_RATES.get(universe, 0.0)
+    if rate <= 0 or not years or not os.path.exists(paper_path):
+        return
+    try:
+        c = sqlite3.connect(paper_path)
+        row = c.execute(
+            "SELECT MAX(trade_date) FROM paper_equity WHERE run_id=?", [run_id]
+        ).fetchone()
+        c.close()
+    except sqlite3.Error:
+        return
+    if not row or not row[0]:
+        return
+    max_d = _date.fromisoformat(str(row[0]))
+    for y in years:
+        # A year counts as "complete" once the last trade date in the WF
+        # has reached late December of that year (Dec 28 catches all
+        # calendars whose last trading day falls Dec 28-31).
+        if max_d >= _date(y.year, 12, 28):
+            if y.strategy_return_pct > 0:
+                y.strategy_return_after_tax_pct = y.strategy_return_pct * (1 - rate)
+            else:
+                # Loss: pass through (no carryforward modeled here).
+                y.strategy_return_after_tax_pct = y.strategy_return_pct
+
+
 def get_strict_wf_status(
     duck: duckdb.DuckDBPyConnection, universe: str
 ) -> StrictWfResponse:
@@ -1173,6 +1213,13 @@ def get_strict_wf_status(
         y.benchmark_return_pct = b
         if b is not None:
             y.excess_pct = y.strategy_return_pct - b
+
+    # Tax-adjusted strategy return — populated only when the calendar
+    # year has fully elapsed in the data (we look at the latest paper
+    # equity row). Pipeline stays pre-tax; this is a display-only column.
+    # Rates: 30% US short-term, 15% India short-term. Losses pass through
+    # unchanged (no carryforward modeled at this level).
+    _strict_apply_tax(universe, paper_path, run_id, years)
 
     # Cumulative summary
     strat_cum = 1.0

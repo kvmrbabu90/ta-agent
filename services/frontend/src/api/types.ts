@@ -168,6 +168,9 @@ export interface WalkforwardResponse {
 export interface StrictWfYearPoint {
   year: number;
   strategy_return_pct: number;
+  // Populated only when the calendar year is complete in the WF data.
+  // Mid-year rows return null — the UI renders an em-dash.
+  strategy_return_after_tax_pct: number | null;
   benchmark_return_pct: number | null;
   excess_pct: number | null;
   sharpe: number | null;

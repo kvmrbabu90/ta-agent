@@ -344,6 +344,14 @@ class WalkforwardResponse(_BaseResponse):
 class StrictWfYearPoint(_BaseResponse):
     year: int
     strategy_return_pct: float
+    # Pre-tax → after-tax haircut, populated ONLY when the calendar year
+    # has fully elapsed in the WF (so partial-year picks aren't unfairly
+    # taxed before they've had a chance to settle). For losing years the
+    # value equals strategy_return_pct (losses pass through; capital-loss
+    # carryforward is not modeled at this level). Rates:
+    #   SP500    → 30% short-term US gains
+    #   NIFTY100 → 15% short-term India gains
+    strategy_return_after_tax_pct: float | None = None
     benchmark_return_pct: float | None = None
     excess_pct: float | None = None
     sharpe: float | None = None

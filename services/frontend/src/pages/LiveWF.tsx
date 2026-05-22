@@ -212,6 +212,12 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
           <tr>
             <th className="px-3 py-2 text-left">Year</th>
             <th className="px-3 py-2 text-right">Strategy</th>
+            <th
+              className="px-3 py-2 text-right"
+              title="Strategy return after capital-gains tax (30% US, 15% India). Populated only at end of calendar year."
+            >
+              After Tax
+            </th>
             <th className="px-3 py-2 text-right">{benchKey}</th>
             <th className="px-3 py-2 text-right">Excess</th>
             <th className="px-3 py-2 text-right">Sharpe</th>
@@ -225,6 +231,19 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
               <td className="px-3 py-2 font-mono text-gray-200">{y.year}</td>
               <td className={`px-3 py-2 text-right font-mono ${y.strategy_return_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {pctFmt(y.strategy_return_pct, true)}
+              </td>
+              <td
+                className={`px-3 py-2 text-right font-mono ${
+                  y.strategy_return_after_tax_pct == null
+                    ? 'text-gray-500'
+                    : y.strategy_return_after_tax_pct >= 0
+                      ? 'text-emerald-400/80'
+                      : 'text-rose-400/80'
+                }`}
+              >
+                {y.strategy_return_after_tax_pct != null
+                  ? pctFmt(y.strategy_return_after_tax_pct, true)
+                  : '—'}
               </td>
               <td className={`px-3 py-2 text-right font-mono ${(y.benchmark_return_pct ?? 0) >= 0 ? 'text-sky-400' : 'text-rose-400'}`}>
                 {y.benchmark_return_pct != null ? pctFmt(y.benchmark_return_pct, true) : '—'}
