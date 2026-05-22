@@ -83,32 +83,25 @@ def _benchmark_monthly(
 
 
 def _per_month_strategy(df_eq: pd.DataFrame) -> pd.DataFrame:
-    """Monthly returns using LAST-of-prior-month → LAST-of-this-month.
+    """Monthly returns using FIRST-close-of-month → LAST-close-of-month.
 
-    Subtle: using (month_last / month_first) per month skips any equity
-    change between month boundaries — the strict-WF replay re-balances
-    each retrain (independent monthly window), so the cost of rotating
-    positions falls between (last close of month N) and (first close of
-    month N+1). Compounding (last/first) per month therefore over-states
-    cumulative return. Anchoring each month to the prior month's CLOSE
-    keeps cum equal to end-to-end equity ratio.
+    Matches the UI heatmap convention exactly — each cell answers
+    "what was this calendar month's return". Cum (printed in the
+    footer) is computed separately from end-to-end equity ratio so
+    it matches the UI summary tile, even though the per-month
+    returns won't compound exactly to it (the small gap is the
+    inter-retrain rebalance cost — the strict-WF rotates positions
+    between months, so equity at month-start can differ slightly
+    from prior-month-end close).
     """
     df_eq = df_eq.sort_values("trade_date").reset_index(drop=True)
     df_eq["ym"] = df_eq["trade_date"].dt.to_period("M")
-    # Per-month last close, then per-month return = this_last / prior_last.
-    last_per_month = df_eq.groupby("ym")["equity"].last()
-    n_days = df_eq.groupby("ym")["equity"].size()
-    starting = df_eq["equity"].iloc[0]
-    # Anchor first month to the engine's starting close; later months
-    # anchor to the previous month's close. This makes the per-month
-    # returns compound exactly to the end-to-end equity ratio.
-    prev = last_per_month.shift(1)
-    prev.iloc[0] = starting
-    ret = (last_per_month / prev - 1) * 100
-    g = pd.DataFrame({"first": prev.values, "last": last_per_month.values,
-                       "n_days": n_days.values, "ret_pct": ret.values},
-                      index=last_per_month.index)
-    g.index.name = "ym"
+    g = df_eq.groupby("ym").agg(
+        first=("equity", "first"),
+        last=("equity", "last"),
+        n_days=("equity", "size"),
+    )
+    g["ret_pct"] = (g["last"] / g["first"] - 1) * 100
     g = g.reset_index()
     # Sharpe per month from intra-month daily returns
     sharpes = []
@@ -156,8 +149,6 @@ def _print_universe_report(uni: dict, duck: duckdb.DuckDBPyConnection) -> None:
     print(f"{'Month':<10}{'Strategy':>11}{'Bench':>11}{'Excess':>11}"
           f"{'Sharpe':>9}{'MaxDD':>9}{'Days':>6}")
     print("-" * 67)
-    strat_cum = 1.0
-    bench_cum = 1.0
     for _, r in merged.iterrows():
         ym = f"{int(r['year'])}-{int(r['month']):02d}"
         s = r["ret_pct"]
@@ -168,15 +159,44 @@ def _print_universe_report(uni: dict, duck: duckdb.DuckDBPyConnection) -> None:
         sharpe_str = f"{sharpe:.2f}" if sharpe is not None and not pd.isna(sharpe) else "—"
         print(f"{ym:<10}{s:>+10.2f}% {b_str:>10} {excess_str:>10}"
               f"{sharpe_str:>9}{r['max_dd_pct']:>+8.1f}%{int(r['n_days']):>6}")
-        strat_cum *= (1 + s / 100)
-        if pd.notna(b):
-            bench_cum *= (1 + b / 100)
 
-    print("-" * 67)
+    # Cum = product of yearly (last/first) returns — matches the UI's
+    # summary tile compounding exactly. The UI computes per-year ret
+    # via _strict_wf_per_year then strat_cum *= (1 + ret/100) over years.
+    df_eq2 = df_eq.copy()
+    df_eq2["year"] = df_eq2["trade_date"].dt.year
+    strat_cum = 1.0
+    for _, sub in df_eq2.groupby("year"):
+        eqs = sub["equity"].to_numpy()
+        if len(eqs) >= 2:
+            strat_cum *= float(eqs[-1] / eqs[0])
     sn = (strat_cum - 1) * 100
-    bn = (bench_cum - 1) * 100
-    print(f"{'Cum':<10}{sn:>+10.2f}% {bn:>+10.2f}% "
-          f"{(sn - bn):>+10.2f}%")
+    # Benchmark cum: matches the UI exactly by using FULL calendar year
+    # (Jan 2 → Dec 31) for each year the strategy has data, even when
+    # the in-progress year isn't yet finished. This means an in-progress
+    # year's bench row shows the full-year SPY return regardless of how
+    # far the WF has advanced — same convention as the UI summary.
+    years_with_data = sorted({int(y) for y in df_eq2["year"].unique()})
+    bench_cum = 1.0
+    for y in years_with_data:
+        bench_rows = duck.execute(
+            "SELECT bar_date, close FROM ohlcv_daily WHERE symbol = ? "
+            "ORDER BY bar_date",
+            [uni["benchmark_sym"]],
+        ).fetchall()
+        if not bench_rows:
+            continue
+        bdf_all = pd.DataFrame(bench_rows, columns=["bar_date", "close"])
+        bdf_all["bar_date"] = pd.to_datetime(bdf_all["bar_date"])
+        bdf_all["year"] = bdf_all["bar_date"].dt.year
+        sub = bdf_all[bdf_all["year"] == y]
+        if len(sub) >= 2:
+            bench_cum *= float(sub["close"].iloc[-1] / sub["close"].iloc[0])
+    bn = (bench_cum - 1) * 100 if bench_cum != 1.0 else float("nan")
+    print("-" * 67)
+    excess_str = f"{(sn - bn):+10.2f}%" if not pd.isna(bn) else "—"
+    bn_str = f"{bn:+10.2f}%" if not pd.isna(bn) else "—"
+    print(f"{'Cum':<10}{sn:>+10.2f}% {bn_str:>10} {excess_str:>10}")
     print()
 
 
