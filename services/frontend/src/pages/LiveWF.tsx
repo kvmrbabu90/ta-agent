@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { useState } from 'react';
 import { useStrictWf } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
@@ -420,6 +421,8 @@ function EquityCurveChart({
 
 const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+type HeatmapMode = 'excess' | 'strategy';
+
 function MonthlyExcessHeatmap({
   cells,
   benchKey,
@@ -427,6 +430,8 @@ function MonthlyExcessHeatmap({
   cells: StrictWfMonthlyExcessCell[];
   benchKey: string;
 }) {
+  const [mode, setMode] = useState<HeatmapMode>('excess');
+
   if (!cells || cells.length === 0) return null;
 
   // Build a (year, month) → cell index so we can render the grid even
@@ -442,27 +447,35 @@ function MonthlyExcessHeatmap({
   const years: number[] = [];
   for (let y = minYear; y <= maxYear; y++) years.push(y);
 
-  // Magnitude scale: |excess|=10% → opacity 1.0; clamp.
-  const MAX_MAG = 10;
+  // Color scale magnitude depends on the metric. Excess cells rarely
+  // exceed ±10% (it's a difference). Raw strategy returns can hit
+  // ±15% in big months, so loosen the clamp accordingly.
+  const MAX_MAG = mode === 'strategy' ? 15 : 10;
 
-  function cellBg(excess: number | null | undefined): string {
-    if (excess == null || Number.isNaN(excess)) return 'transparent';
-    const mag = Math.min(Math.abs(excess) / MAX_MAG, 1);
-    if (excess > 0) {
+  function valueFor(cell: StrictWfMonthlyExcessCell | undefined): number | null {
+    if (!cell) return null;
+    const v = mode === 'strategy' ? cell.strategy_pct : cell.excess_pct;
+    return v ?? null;
+  }
+
+  function cellBg(v: number | null | undefined): string {
+    if (v == null || Number.isNaN(v)) return 'transparent';
+    const mag = Math.min(Math.abs(v) / MAX_MAG, 1);
+    if (v > 0) {
       // emerald-500 #10b981, with alpha scaled by mag
       return `rgba(16, 185, 129, ${(0.15 + 0.85 * mag).toFixed(2)})`;
     }
-    if (excess < 0) {
+    if (v < 0) {
       // rose-500 #f43f5e
       return `rgba(244, 63, 94, ${(0.15 + 0.85 * mag).toFixed(2)})`;
     }
     return 'rgba(107, 114, 128, 0.2)';
   }
 
-  function cellText(excess: number | null | undefined): string {
-    if (excess == null || Number.isNaN(excess)) return '—';
-    const sign = excess >= 0 ? '+' : '';
-    return `${sign}${excess.toFixed(1)}`;
+  function cellText(v: number | null | undefined): string {
+    if (v == null || Number.isNaN(v)) return '—';
+    const sign = v >= 0 ? '+' : '';
+    return `${sign}${v.toFixed(1)}`;
   }
 
   function cellTooltip(cell: StrictWfMonthlyExcessCell | undefined): string {
@@ -473,22 +486,66 @@ function MonthlyExcessHeatmap({
     return `${cell.year}-${String(cell.month).padStart(2, '0')}\nStrategy: ${s}\n${benchKey}: ${b}\nExcess:   ${e}`;
   }
 
+  const headerLabel =
+    mode === 'strategy'
+      ? 'Monthly strategy return (%)'
+      : `Monthly excess vs ${benchKey} (Strategy − ${benchKey}, %)`;
+  const scaleLabel = mode === 'strategy' ? '15%' : '10%';
+
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
         <div className="text-[11px] uppercase tracking-wider text-gray-500">
-          Monthly excess vs {benchKey} (Strategy − {benchKey}, %)
+          {headerLabel}
         </div>
-        <div className="flex items-center gap-2 text-[10px] text-gray-500">
-          <span>−10%</span>
-          <span
-            className="h-2 w-24 rounded"
-            style={{
-              background:
-                'linear-gradient(to right, rgba(244,63,94,1), rgba(244,63,94,0.15), rgba(107,114,128,0.2), rgba(16,185,129,0.15), rgba(16,185,129,1))',
-            }}
-          />
-          <span>+10%</span>
+        <div className="flex items-center gap-3">
+          {/* Mode toggle */}
+          <div
+            className="inline-flex overflow-hidden rounded-md border border-gray-700 text-[10px]"
+            role="tablist"
+            aria-label="Heatmap metric"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'excess'}
+              onClick={() => setMode('excess')}
+              className={[
+                'px-2 py-0.5 transition-colors',
+                mode === 'excess'
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-100',
+              ].join(' ')}
+            >
+              Excess vs {benchKey}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'strategy'}
+              onClick={() => setMode('strategy')}
+              className={[
+                'px-2 py-0.5 transition-colors',
+                mode === 'strategy'
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-100',
+              ].join(' ')}
+            >
+              Strategy return
+            </button>
+          </div>
+          {/* Color legend */}
+          <div className="flex items-center gap-2 text-[10px] text-gray-500">
+            <span>−{scaleLabel}</span>
+            <span
+              className="h-2 w-24 rounded"
+              style={{
+                background:
+                  'linear-gradient(to right, rgba(244,63,94,1), rgba(244,63,94,0.15), rgba(107,114,128,0.2), rgba(16,185,129,0.15), rgba(16,185,129,1))',
+              }}
+            />
+            <span>+{scaleLabel}</span>
+          </div>
         </div>
       </div>
       <div className="overflow-x-auto">
@@ -515,16 +572,17 @@ function MonthlyExcessHeatmap({
                 {MONTH_ABBREV.map((_, idx) => {
                   const month = idx + 1;
                   const cell = cellByYM.get(`${y}-${month}`);
+                  const v = valueFor(cell);
                   return (
                     <td
                       key={month}
                       title={cellTooltip(cell)}
                       className="h-7 min-w-[44px] rounded text-center font-mono text-[10px] text-gray-100"
                       style={{
-                        backgroundColor: cellBg(cell?.excess_pct),
+                        backgroundColor: cellBg(v),
                       }}
                     >
-                      {cellText(cell?.excess_pct)}
+                      {cellText(v)}
                     </td>
                   );
                 })}
