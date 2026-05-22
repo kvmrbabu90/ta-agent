@@ -978,7 +978,10 @@ _STRICT_WF_PATHS = {
         "preds": "data/processed/wf_nifty100_strict/predictions.sqlite",
         "paper": "data/processed/wf_nifty100_strict/analysis_live.sqlite",
         "commission": "india_zerodha",
-        "expected_retrains": 132,  # if 10y of data, else 40 for original 3.3y
+        # 124 = monthly retrains over the strict NIFTY100 window
+        # 2016-01-01 → 2026-04-30 (10y 4m). SP500 is 132 because that
+        # WF spans 2014-01-01 → 2024-12-31 (11y).
+        "expected_retrains": 124,
     },
 }
 
