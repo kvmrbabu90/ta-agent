@@ -339,13 +339,39 @@ def _predict_window(
         return 0
     panel["bar_date"] = pd.to_datetime(panel["bar_date"]).dt.date
 
+    def _members_on_with_retry(uni: str, dt, *, attempts: int = 30, delay_s: float = 5.0):
+        """members_on opens its own DuckDB connection. If another WF
+        process is holding the DB exclusively (training-dataset assembly
+        phase), this read-open will fail with an IOException. Retry for
+        up to attempts × delay_s = 2.5 min — long enough to outlast any
+        single training-dataset write."""
+        last_exc: Exception | None = None
+        for i in range(attempts):
+            try:
+                return members_on(uni, dt)
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if "Cannot open file" not in msg and "being used by another process" not in msg \
+                        and "IO Error" not in msg:
+                    raise  # not a lock collision — let the outer handler log it
+                last_exc = exc
+                log.warning(
+                    f"predict {uni} {dt}: DuckDB locked by another process "
+                    f"(attempt {i+1}/{attempts}); sleeping {delay_s:.0f}s"
+                )
+                time.sleep(delay_s)
+        # Out of attempts — re-raise so the per-day handler logs it.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("unreachable")
+
     rows_logged = 0
     for d in days:
         try:
             day_rows = panel[panel["bar_date"] == d]
             if day_rows.empty:
                 continue
-            members = members_on(universe, d)
+            members = _members_on_with_retry(universe, d)
             if members.empty:
                 continue
             day_rows = day_rows[day_rows["symbol"].isin(members["symbol"])]
