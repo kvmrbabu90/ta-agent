@@ -1292,11 +1292,24 @@ def _strict_build_equity_curve(
     except Exception:  # noqa: BLE001 — benchmark omitted is acceptable
         bench_equity = []
 
+    # Single-shot LTCG dot at the last chart date — what the B&H investor
+    # would actually keep if they liquidated today. Sits below the
+    # benchmark line whenever the benchmark has gained; equals the line
+    # otherwise (no tax on losses).
+    bench_post_ltcg: float | None = None
+    if bench_equity:
+        ltcg = _STRICT_WF_BENCH_LTCG.get(universe, 0.0)
+        if ltcg > 0:
+            gain = bench_equity[-1] - bench_equity[0]
+            tax = gain * ltcg if gain > 0 else 0.0
+            bench_post_ltcg = round(bench_equity[-1] - tax, 4)
+
     return StrictWfEquityCurve(
         dates=dates,
         equity_pre_tax=pretax,
         equity_post_tax=posttax,
         benchmark_equity=bench_equity,
+        benchmark_post_ltcg_endpoint=bench_post_ltcg,
     )
 
 

@@ -405,6 +405,13 @@ class StrictWfEquityCurve(_BaseResponse):
                              the same starting capital (omitted if no
                              benchmark history covers the WF window)
 
+    Plus a single scalar:
+        benchmark_post_ltcg_endpoint — what the B&H investor walks away
+            with on the LAST chart date after paying LTCG on the
+            unrealized gain. Equals benchmark_equity[-1] when the
+            benchmark hasn't gained (no tax on losses). Rendered as a
+            single dot on the chart.
+
     Empty when there are no equity points yet.
     """
 
@@ -412,6 +419,7 @@ class StrictWfEquityCurve(_BaseResponse):
     equity_pre_tax: list[float] = Field(default_factory=list)
     equity_post_tax: list[float] = Field(default_factory=list)
     benchmark_equity: list[float] = Field(default_factory=list)
+    benchmark_post_ltcg_endpoint: float | None = None
 
 
 class StrictWfResponse(_BaseResponse):

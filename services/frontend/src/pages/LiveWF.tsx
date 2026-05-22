@@ -1,7 +1,9 @@
 import {
   CartesianGrid,
+  Label,
   Line,
   LineChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -260,6 +262,18 @@ function EquityCurveChart({
     // Hide post-tax series until it diverges from pre-tax (no completed
     // year yet → the two lines overlap and the legend is noise).
     curve.equity_post_tax.some((v, i) => Math.abs(v - curve.equity_pre_tax[i]) > 1e-6);
+  const benchEndIdx = curve.dates.length - 1;
+  const benchLastEq = hasBench ? curve.benchmark_equity[benchEndIdx] : null;
+  const benchPostLtcg = curve.benchmark_post_ltcg_endpoint;
+  // Show the dot only if (a) we have a benchmark line, (b) the LTCG
+  // value is defined, and (c) it's meaningfully below the pre-tax
+  // endpoint (i.e. the benchmark gained — losses pass through and the
+  // dot would just sit on top of the line, adding noise).
+  const showLtcgDot =
+    hasBench &&
+    benchPostLtcg != null &&
+    benchLastEq != null &&
+    benchLastEq - benchPostLtcg > 0.01;
   const data = curve.dates.map((d, i) => ({
     date: d,
     pre: curve.equity_pre_tax[i],
@@ -281,6 +295,11 @@ function EquityCurveChart({
           {hasBench ? (
             <>
               {' · '}<span className="text-sky-400">{benchKey} B&amp;H</span>
+            </>
+          ) : null}
+          {showLtcgDot ? (
+            <>
+              {' · '}<span className="text-sky-400/70">{benchKey} post-LTCG</span>
             </>
           ) : null}
         </div>
@@ -343,6 +362,26 @@ function EquityCurveChart({
                 dot={false}
                 isAnimationActive={false}
               />
+            )}
+            {showLtcgDot && benchPostLtcg != null && (
+              <ReferenceDot
+                x={curve.dates[benchEndIdx]}
+                y={benchPostLtcg}
+                r={5}
+                fill={CHART_BLUE}
+                fillOpacity={0.85}
+                stroke="#0b1220"
+                strokeWidth={2}
+                ifOverflow="extendDomain"
+              >
+                <Label
+                  value={`post-LTCG ${benchPostLtcg.toFixed(2)}`}
+                  position="left"
+                  offset={10}
+                  fill={CHART_BLUE}
+                  fontSize={10}
+                />
+              </ReferenceDot>
             )}
           </LineChart>
         </ResponsiveContainer>

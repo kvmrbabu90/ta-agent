@@ -201,6 +201,10 @@ export interface StrictWfEquityCurve {
   equity_pre_tax: number[];
   equity_post_tax: number[];
   benchmark_equity: number[];
+  // Benchmark equity AFTER LTCG, sampled only at the last date. Sits
+  // below benchmark_equity[last] when the benchmark gained; equal to it
+  // otherwise. Rendered as a single dot on the chart.
+  benchmark_post_ltcg_endpoint: number | null;
 }
 
 export interface StrictWfProgress {
