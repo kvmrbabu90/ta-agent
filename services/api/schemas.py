@@ -362,6 +362,14 @@ class StrictWfYearPoint(_BaseResponse):
 class StrictWfSummary(_BaseResponse):
     starting_capital: float = 1000.0
     strategy_cum_return_pct: float = 0.0
+    # After-tax cumulative — same equity simulation but with capital
+    # reduced by the prior year's tax bill on Jan 1 of each subsequent
+    # year. Populated whenever at least one calendar year has fully
+    # elapsed in the WF data; equals strategy_cum_return_pct as long as
+    # no year is complete yet. Display-only; pre-tax pipeline unchanged.
+    strategy_cum_return_after_tax_pct: float | None = None
+    strategy_annualized_after_tax_pct: float | None = None
+    strategy_multiple_after_tax: float | None = None
     benchmark_cum_return_pct: float = 0.0
     strategy_annualized_pct: float = 0.0
     benchmark_annualized_pct: float = 0.0

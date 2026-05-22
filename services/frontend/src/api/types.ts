@@ -181,6 +181,11 @@ export interface StrictWfYearPoint {
 export interface StrictWfSummary {
   starting_capital: number;
   strategy_cum_return_pct: number;
+  // After-tax equivalents — populated once at least one calendar year
+  // is complete in the WF. Null until then.
+  strategy_cum_return_after_tax_pct: number | null;
+  strategy_annualized_after_tax_pct: number | null;
+  strategy_multiple_after_tax: number | null;
   benchmark_cum_return_pct: number;
   strategy_annualized_pct: number;
   benchmark_annualized_pct: number;

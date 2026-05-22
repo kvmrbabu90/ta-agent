@@ -1119,18 +1119,14 @@ def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgres
 _STRICT_WF_TAX_RATES = {"SP500": 0.30, "NIFTY100": 0.15}
 
 
-def _strict_apply_tax(
-    universe: str, paper_path: str, run_id: str, years: list[StrictWfYearPoint]
-) -> None:
-    """Set strategy_return_after_tax_pct on years whose calendar year has
-    fully elapsed in the WF data; leave it None for the in-progress year."""
+def _strict_max_trade_date(paper_path: str, run_id: str):
+    """Return the latest trade_date in paper_equity for ``run_id`` as a
+    datetime.date, or None if there's no such row (or the file is missing)."""
     import os
     import sqlite3
     from datetime import date as _date
-
-    rate = _STRICT_WF_TAX_RATES.get(universe, 0.0)
-    if rate <= 0 or not years or not os.path.exists(paper_path):
-        return
+    if not os.path.exists(paper_path):
+        return None
     try:
         c = sqlite3.connect(paper_path)
         row = c.execute(
@@ -1138,10 +1134,28 @@ def _strict_apply_tax(
         ).fetchone()
         c.close()
     except sqlite3.Error:
-        return
+        return None
     if not row or not row[0]:
+        return None
+    try:
+        return _date.fromisoformat(str(row[0]))
+    except ValueError:
+        return None
+
+
+def _strict_apply_tax(
+    universe: str, paper_path: str, run_id: str, years: list[StrictWfYearPoint]
+) -> None:
+    """Set strategy_return_after_tax_pct on years whose calendar year has
+    fully elapsed in the WF data; leave it None for the in-progress year."""
+    from datetime import date as _date
+
+    rate = _STRICT_WF_TAX_RATES.get(universe, 0.0)
+    if rate <= 0 or not years:
         return
-    max_d = _date.fromisoformat(str(row[0]))
+    max_d = _strict_max_trade_date(paper_path, run_id)
+    if max_d is None:
+        return
     for y in years:
         # A year counts as "complete" once the last trade date in the WF
         # has reached late December of that year (Dec 28 catches all
@@ -1152,6 +1166,35 @@ def _strict_apply_tax(
             else:
                 # Loss: pass through (no carryforward modeled here).
                 y.strategy_return_after_tax_pct = y.strategy_return_pct
+
+
+def _strict_cum_after_tax_multiple(
+    universe: str, max_d, years: list[StrictWfYearPoint]
+) -> float | None:
+    """Compound after-tax equity multiple by walking years left→right.
+
+    Per-year factor:
+        - in-progress year, or losing year → (1 + r)
+        - completed year with positive r   → (1 + r·(1 − tax_rate))
+
+    Equivalent to deducting the prior year's tax bill from capital on
+    Jan 1, then compounding the next year on the reduced base. Returns
+    None when no tax rate applies or there's no year data.
+    """
+    from datetime import date as _date
+
+    rate = _STRICT_WF_TAX_RATES.get(universe, 0.0)
+    if rate <= 0 or not years or max_d is None:
+        return None
+    m = 1.0
+    for y in years:
+        r = y.strategy_return_pct / 100.0
+        year_complete = max_d >= _date(y.year, 12, 28)
+        if year_complete and r > 0:
+            m *= 1 + r * (1 - rate)
+        else:
+            m *= 1 + r
+    return m
 
 
 def get_strict_wf_status(
@@ -1229,9 +1272,21 @@ def get_strict_wf_status(
         if y.benchmark_return_pct is not None:
             bench_cum *= (1 + y.benchmark_return_pct / 100)
     n_years = max(len(years), 1)
+    # After-tax cumulative — reuses the same per-year strategy_return_pct
+    # but with capital reduced by each completed year's tax. See
+    # _strict_cum_after_tax_multiple for the per-year factor.
+    max_d_at = _strict_max_trade_date(paper_path, run_id)
+    m_after_tax = _strict_cum_after_tax_multiple(universe, max_d_at, years)
     summary = StrictWfSummary(
         starting_capital=1000.0,
         strategy_cum_return_pct=(strat_cum - 1) * 100,
+        strategy_cum_return_after_tax_pct=(
+            (m_after_tax - 1) * 100 if m_after_tax is not None else None
+        ),
+        strategy_annualized_after_tax_pct=(
+            (m_after_tax ** (1 / n_years) - 1) * 100 if m_after_tax is not None else None
+        ),
+        strategy_multiple_after_tax=m_after_tax,
         benchmark_cum_return_pct=(bench_cum - 1) * 100,
         strategy_annualized_pct=(strat_cum ** (1 / n_years) - 1) * 100,
         benchmark_annualized_pct=(bench_cum ** (1 / n_years) - 1) * 100,

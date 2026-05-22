@@ -157,12 +157,21 @@ function ProgressBar({ data }: { data: StrictWfResponse }) {
 function SummaryTiles({ data }: { data: StrictWfResponse }) {
   const s = data.summary;
   const ahead = s.strategy_cum_return_pct >= s.benchmark_cum_return_pct;
+  const cumAfterTax =
+    s.strategy_cum_return_after_tax_pct != null
+      ? `after tax: ${pctFmt(s.strategy_cum_return_after_tax_pct, true)}`
+      : undefined;
+  const annAfterTax =
+    s.strategy_annualized_after_tax_pct != null
+      ? `after tax: ${pctFmt(s.strategy_annualized_after_tax_pct, true)}`
+      : undefined;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <Tile
         label="Strategy cum"
         value={pctFmt(s.strategy_cum_return_pct, true)}
         tone={s.strategy_cum_return_pct >= 0 ? 'pos' : 'neg'}
+        subValue={cumAfterTax}
       />
       <Tile
         label={`${data.benchmark_symbol} cum`}
@@ -173,6 +182,7 @@ function SummaryTiles({ data }: { data: StrictWfResponse }) {
         label="Strategy annualized"
         value={pctFmt(s.strategy_annualized_pct, true)}
         tone={s.strategy_annualized_pct >= s.benchmark_annualized_pct ? 'pos' : 'neg'}
+        subValue={annAfterTax}
       />
       <Tile
         label={ahead ? 'Strategy / Bench' : 'Trailing bench'}
@@ -187,10 +197,12 @@ function Tile({
   label,
   value,
   tone = 'neutral',
+  subValue,
 }: {
   label: string;
   value: string;
   tone?: 'pos' | 'neg' | 'sky' | 'neutral';
+  subValue?: string;
 }) {
   const color =
     tone === 'pos' ? 'text-emerald-400' :
@@ -200,6 +212,14 @@ function Tile({
     <div className="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2">
       <div className="text-[11px] uppercase tracking-wider text-gray-500">{label}</div>
       <div className={`mt-1 font-mono text-base ${color}`}>{value}</div>
+      {subValue ? (
+        <div
+          className="mt-0.5 font-mono text-[11px] text-gray-500"
+          title="After capital-gains tax (30% US, 15% India), assuming the prior year's tax bill is paid on Jan 1."
+        >
+          {subValue}
+        </div>
+      ) : null}
     </div>
   );
 }
