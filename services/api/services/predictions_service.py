@@ -1083,8 +1083,14 @@ def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgres
         return progress
     mtime = datetime.fromtimestamp(os.path.getmtime(preds_path), tz=timezone.utc)
     progress.last_retrain_at_utc = mtime.isoformat()
-    # Heuristic for "running": modified in last 2 hours
-    progress.is_running = (datetime.now(timezone.utc) - mtime).total_seconds() < 7200
+    # Heuristic for "running": predictions.sqlite was modified in the last
+    # 5 hours. Bumped from 2h after observing contended SP500 retrains
+    # hitting ~2.6h between writes — the 2h window was flagging actively-
+    # training runs as Idle. 5h is generous enough to cover further
+    # contention growth and the occasional bigger-window retrain, but
+    # still flips to Idle within ~5h of a true crash so the badge stays
+    # diagnostic.
+    progress.is_running = (datetime.now(timezone.utc) - mtime).total_seconds() < 18000
     c = sqlite3.connect(preds_path)
     # Each retrain produces predictions for a window with the SAME first as_of.
     # Number of distinct (year, month) of as_of approximates retrains complete.
