@@ -1118,6 +1118,13 @@ def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgres
 # pipeline is unchanged). 30% blanket US short-term, 15% India short-term.
 _STRICT_WF_TAX_RATES = {"SP500": 0.30, "NIFTY100": 0.15}
 
+# LTCG rates applied to the benchmark cumulative return (B&H investor
+# who sells once at the end of the window).
+#   SP500    → 15% (US federal LTCG, mid-bracket; Texas resident → no
+#               state income tax add-on).
+#   NIFTY100 → 12.5% (India LTCG on listed equity).
+_STRICT_WF_BENCH_LTCG = {"SP500": 0.15, "NIFTY100": 0.125}
+
 
 def _strict_max_trade_date(paper_path: str, run_id: str):
     """Return the latest trade_date in paper_equity for ``run_id`` as a
@@ -1166,6 +1173,131 @@ def _strict_apply_tax(
             else:
                 # Loss: pass through (no carryforward modeled here).
                 y.strategy_return_after_tax_pct = y.strategy_return_pct
+
+
+def _strict_build_equity_curve(
+    universe: str,
+    paper_path: str,
+    run_id: str,
+    duck: duckdb.DuckDBPyConnection,
+    bench_sym: str,
+) -> "StrictWfEquityCurve":
+    """Build the per-day equity-curve payload: pre-tax, post-tax, and
+    benchmark (B&H, indexed to the strategy's starting capital).
+
+    Post-tax recipe:
+        - For each completed calendar year, tax_y = max(0, eoy_eq - soy_eq) * rate
+          where soy_eq/eoy_eq are pre-tax (paper-engine) equities.
+        - post_tax(t) = pre_tax(t) − sum(tax_y for completed years y < t.year).
+        - Losing years contribute zero. The in-progress year is never taxed.
+
+    Benchmark series:
+        - Read close prices for ``bench_sym`` over [first_date, last_date].
+        - Rescale so benchmark_equity[0] == pre_tax_equity[0] (= starting
+          capital). LTCG isn't applied here — that's a one-shot adjustment
+          shown in the summary tile, not a running drag.
+    """
+    import os
+    import sqlite3
+    from datetime import date as _date
+    from services.api.schemas import StrictWfEquityCurve
+
+    empty = StrictWfEquityCurve()
+    if not os.path.exists(paper_path):
+        return empty
+    try:
+        c = sqlite3.connect(paper_path)
+        rows = c.execute(
+            "SELECT trade_date, equity FROM paper_equity "
+            "WHERE run_id=? AND snapshot_kind='close_5pm_ct' ORDER BY trade_date",
+            [run_id],
+        ).fetchall()
+        c.close()
+    except sqlite3.Error:
+        return empty
+    if not rows:
+        return empty
+
+    rate = _STRICT_WF_TAX_RATES.get(universe, 0.0)
+    max_d = _date.fromisoformat(str(rows[-1][0]))
+
+    # Per-year first / last equity (pre-tax).
+    soy_eq: dict[int, float] = {}
+    eoy_eq: dict[int, float] = {}
+    for d_str, eq in rows:
+        y = int(str(d_str)[:4])
+        if y not in soy_eq:
+            soy_eq[y] = float(eq)
+        eoy_eq[y] = float(eq)
+
+    # Tax owed for each COMPLETED year (becomes effective on Jan 1 of y+1).
+    year_tax: dict[int, float] = {}
+    for y, first in soy_eq.items():
+        if max_d >= _date(y, 12, 28):
+            gain = eoy_eq[y] - first
+            year_tax[y] = gain * rate if gain > 0 else 0.0
+
+    # Walk rows; cumul_tax at date d = sum of taxes for all completed
+    # years strictly before d.year.
+    dates: list[str] = []
+    pretax: list[float] = []
+    posttax: list[float] = []
+    # Precompute the running cumul keyed by year for O(1) lookup.
+    sorted_completed = sorted(year_tax)
+    running = 0.0
+    cumul_by_starting_year: dict[int, float] = {}
+    for y in sorted_completed:
+        # Tax for year y takes effect at Jan 1 of year y+1.
+        cumul_by_starting_year[y + 1] = running + year_tax[y]
+        running += year_tax[y]
+    last_year_seen = -1
+    cur_cumul = 0.0
+    for d_str, eq in rows:
+        y = int(str(d_str)[:4])
+        if y != last_year_seen:
+            # Update cumul if we crossed into a new year that has prior-year tax accrued.
+            # Largest completed-year-boundary <= y.
+            candidates = [yy for yy in cumul_by_starting_year if yy <= y]
+            cur_cumul = max((cumul_by_starting_year[yy] for yy in candidates), default=0.0)
+            last_year_seen = y
+        dates.append(str(d_str))
+        pretax.append(round(float(eq), 4))
+        posttax.append(round(float(eq) - cur_cumul, 4))
+
+    # Benchmark equity — rescale close prices to start at pretax[0].
+    bench_equity: list[float] = []
+    try:
+        first_d = _date.fromisoformat(dates[0])
+        last_d = max_d
+        bench_rows = duck.execute(
+            "SELECT bar_date, close FROM ohlcv_daily WHERE symbol = ? "
+            "AND bar_date BETWEEN ? AND ? ORDER BY bar_date",
+            [bench_sym, first_d, last_d],
+        ).fetchall()
+        if bench_rows:
+            # Build a date → close map, then sample at each strategy date
+            # (forward-filling between bench bars so weekend/holiday strategy
+            # dates pick up the prior bench close).
+            bclose: dict[str, float] = {str(d): float(p) for d, p in bench_rows}
+            # First close for normalization — could be later than dates[0]
+            # if benchmark has no row exactly on dates[0]; use the earliest
+            # available within the window.
+            bench_first = float(bench_rows[0][1])
+            scale = pretax[0] / bench_first if bench_first > 0 else 0.0
+            last_close = bench_first
+            for d_str in dates:
+                if d_str in bclose:
+                    last_close = bclose[d_str]
+                bench_equity.append(round(last_close * scale, 4))
+    except Exception:  # noqa: BLE001 — benchmark omitted is acceptable
+        bench_equity = []
+
+    return StrictWfEquityCurve(
+        dates=dates,
+        equity_pre_tax=pretax,
+        equity_post_tax=posttax,
+        benchmark_equity=bench_equity,
+    )
 
 
 def _strict_cum_after_tax_multiple(
@@ -1277,6 +1409,16 @@ def get_strict_wf_status(
     # _strict_cum_after_tax_multiple for the per-year factor.
     max_d_at = _strict_max_trade_date(paper_path, run_id)
     m_after_tax = _strict_cum_after_tax_multiple(universe, max_d_at, years)
+    # Benchmark cum after LTCG — one-shot liquidation at the window end.
+    # Applied only when bench_cum is positive (no tax on losses).
+    bench_ltcg = _STRICT_WF_BENCH_LTCG.get(universe, 0.0)
+    bench_cum_pct_pre = (bench_cum - 1) * 100
+    bench_cum_pct_post: float | None = None
+    if bench_ltcg > 0:
+        if bench_cum_pct_pre > 0:
+            bench_cum_pct_post = bench_cum_pct_pre * (1 - bench_ltcg)
+        else:
+            bench_cum_pct_post = bench_cum_pct_pre
     summary = StrictWfSummary(
         starting_capital=1000.0,
         strategy_cum_return_pct=(strat_cum - 1) * 100,
@@ -1287,11 +1429,16 @@ def get_strict_wf_status(
             (m_after_tax ** (1 / n_years) - 1) * 100 if m_after_tax is not None else None
         ),
         strategy_multiple_after_tax=m_after_tax,
-        benchmark_cum_return_pct=(bench_cum - 1) * 100,
+        benchmark_cum_return_pct=bench_cum_pct_pre,
+        benchmark_cum_return_after_tax_pct=bench_cum_pct_post,
         strategy_annualized_pct=(strat_cum ** (1 / n_years) - 1) * 100,
         benchmark_annualized_pct=(bench_cum ** (1 / n_years) - 1) * 100,
         n_years=float(n_years),
         strategy_multiple=strat_cum,
+    )
+
+    equity_curve = _strict_build_equity_curve(
+        universe, paper_path, run_id, duck, bench_sym
     )
 
     resp = StrictWfResponse(
@@ -1302,6 +1449,7 @@ def get_strict_wf_status(
         progress=progress,
         years=years,
         summary=summary,
+        equity_curve=equity_curve,
     )
     # Cap cache size at a few entries to avoid leak across many mtime changes.
     if len(_STRICT_WF_CACHE) > 8:

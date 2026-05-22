@@ -1,8 +1,18 @@
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { useStrictWf } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
-import type { StrictWfResponse, StrictWfYearPoint } from '@/api/types';
+import type { StrictWfEquityCurve, StrictWfResponse, StrictWfYearPoint } from '@/api/types';
+import { CHART_BLUE, CHART_GREEN } from '@/utils/colors';
 
 function pctFmt(v: number | null | undefined, signed = false, decimals = 2): string {
   if (v == null) return '—';
@@ -87,7 +97,10 @@ function UniverseSection({
           hint="The first retrain (~70-80 min) hasn't finished writing predictions."
         />
       ) : (
-        <YearTable years={data.years} benchKey={data.benchmark_symbol} />
+        <>
+          <EquityCurveChart curve={data.equity_curve} benchKey={data.benchmark_symbol} />
+          <YearTable years={data.years} benchKey={data.benchmark_symbol} />
+        </>
       )}
     </section>
   );
@@ -177,6 +190,11 @@ function SummaryTiles({ data }: { data: StrictWfResponse }) {
         label={`${data.benchmark_symbol} cum`}
         value={pctFmt(s.benchmark_cum_return_pct, true)}
         tone={s.benchmark_cum_return_pct >= 0 ? 'sky' : 'neg'}
+        subValue={
+          s.benchmark_cum_return_after_tax_pct != null
+            ? `after LTCG: ${pctFmt(s.benchmark_cum_return_after_tax_pct, true)}`
+            : undefined
+        }
       />
       <Tile
         label="Strategy annualized"
@@ -220,6 +238,115 @@ function Tile({
           {subValue}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function EquityCurveChart({
+  curve,
+  benchKey,
+}: {
+  curve: StrictWfEquityCurve;
+  benchKey: string;
+}) {
+  if (!curve || !curve.dates || curve.dates.length === 0) {
+    return null;
+  }
+  // Recharts wants an array of row objects. Zip the columnar arrays.
+  const hasBench = curve.benchmark_equity && curve.benchmark_equity.length === curve.dates.length;
+  const hasPostTax =
+    curve.equity_post_tax &&
+    curve.equity_post_tax.length === curve.dates.length &&
+    // Hide post-tax series until it diverges from pre-tax (no completed
+    // year yet → the two lines overlap and the legend is noise).
+    curve.equity_post_tax.some((v, i) => Math.abs(v - curve.equity_pre_tax[i]) > 1e-6);
+  const data = curve.dates.map((d, i) => ({
+    date: d,
+    pre: curve.equity_pre_tax[i],
+    post: hasPostTax ? curve.equity_post_tax[i] : undefined,
+    bench: hasBench ? curve.benchmark_equity[i] : undefined,
+  }));
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500">Equity curve</div>
+        <div className="text-[11px] text-gray-500">
+          starts at <span className="font-mono text-gray-300">$1,000</span> ·{' '}
+          <span className="text-emerald-400">pre-tax</span>
+          {hasPostTax ? (
+            <>
+              {' · '}<span className="text-emerald-400/70">post-tax</span>
+            </>
+          ) : null}
+          {hasBench ? (
+            <>
+              {' · '}<span className="text-sky-400">{benchKey} B&amp;H</span>
+            </>
+          ) : null}
+        </div>
+      </div>
+      <div className="h-64 w-full">
+        <ResponsiveContainer>
+          <LineChart data={data} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+            <CartesianGrid stroke="#1f2937" />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: '#6b7280' }}
+              minTickGap={40}
+            />
+            <YAxis
+              tick={{ fontSize: 10, fill: '#6b7280' }}
+              tickFormatter={(v: number) => v.toFixed(0)}
+              domain={['auto', 'auto']}
+              width={56}
+            />
+            <Tooltip
+              contentStyle={{
+                fontSize: 11,
+                backgroundColor: '#0b1220',
+                border: '1px solid #1f2937',
+                color: '#e5e7eb',
+              }}
+              formatter={(v: number | string) =>
+                typeof v === 'number' ? v.toFixed(2) : v
+              }
+            />
+            <Line
+              type="monotone"
+              dataKey="pre"
+              name="pre-tax"
+              stroke={CHART_GREEN}
+              strokeWidth={1.5}
+              dot={false}
+              isAnimationActive={false}
+            />
+            {hasPostTax && (
+              <Line
+                type="monotone"
+                dataKey="post"
+                name="post-tax"
+                stroke={CHART_GREEN}
+                strokeOpacity={0.55}
+                strokeDasharray="3 3"
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+            )}
+            {hasBench && (
+              <Line
+                type="monotone"
+                dataKey="bench"
+                name={`${benchKey} B&H`}
+                stroke={CHART_BLUE}
+                strokeWidth={1.25}
+                dot={false}
+                isAnimationActive={false}
+              />
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

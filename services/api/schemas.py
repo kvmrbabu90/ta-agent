@@ -371,6 +371,13 @@ class StrictWfSummary(_BaseResponse):
     strategy_annualized_after_tax_pct: float | None = None
     strategy_multiple_after_tax: float | None = None
     benchmark_cum_return_pct: float = 0.0
+    # Benchmark cum after LTCG — assumes a single liquidation at the
+    # final date (B&H investor sells once). Rates:
+    #   SP500    → 15% (US federal LTCG, mid-bracket; Texas has no
+    #              state income tax so no add-on).
+    #   NIFTY100 → 12.5% (India LTCG on listed equity, current law).
+    # Populated only when bench_cum_return_pct > 0 (no tax on losses).
+    benchmark_cum_return_after_tax_pct: float | None = None
     strategy_annualized_pct: float = 0.0
     benchmark_annualized_pct: float = 0.0
     n_years: float = 0.0
@@ -387,6 +394,26 @@ class StrictWfProgress(_BaseResponse):
     is_running: bool = False                   # heuristic: progress in last 2h
 
 
+class StrictWfEquityCurve(_BaseResponse):
+    """Columnar equity time series for the Live WF chart.
+
+    Three parallel arrays of the same length:
+        dates              — 'YYYY-MM-DD' strings, sorted ascending
+        equity_pre_tax     — paper-engine equity at each date (pre-tax)
+        equity_post_tax    — pre-tax minus cumulative tax paid up to date
+        benchmark_equity   — buy-and-hold benchmark equity, indexed to
+                             the same starting capital (omitted if no
+                             benchmark history covers the WF window)
+
+    Empty when there are no equity points yet.
+    """
+
+    dates: list[str] = Field(default_factory=list)
+    equity_pre_tax: list[float] = Field(default_factory=list)
+    equity_post_tax: list[float] = Field(default_factory=list)
+    benchmark_equity: list[float] = Field(default_factory=list)
+
+
 class StrictWfResponse(_BaseResponse):
     universe: str
     benchmark_symbol: str
@@ -395,3 +422,4 @@ class StrictWfResponse(_BaseResponse):
     progress: StrictWfProgress
     years: list[StrictWfYearPoint] = Field(default_factory=list)
     summary: StrictWfSummary
+    equity_curve: StrictWfEquityCurve = Field(default_factory=StrictWfEquityCurve)

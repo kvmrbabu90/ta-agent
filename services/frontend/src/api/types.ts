@@ -187,10 +187,20 @@ export interface StrictWfSummary {
   strategy_annualized_after_tax_pct: number | null;
   strategy_multiple_after_tax: number | null;
   benchmark_cum_return_pct: number;
+  // Benchmark cum after LTCG (one-shot liquidation at the window end).
+  // Null when the bench is flat/negative or the universe has no LTCG.
+  benchmark_cum_return_after_tax_pct: number | null;
   strategy_annualized_pct: number;
   benchmark_annualized_pct: number;
   n_years: number;
   strategy_multiple: number;
+}
+
+export interface StrictWfEquityCurve {
+  dates: string[];
+  equity_pre_tax: number[];
+  equity_post_tax: number[];
+  benchmark_equity: number[];
 }
 
 export interface StrictWfProgress {
@@ -211,6 +221,7 @@ export interface StrictWfResponse {
   progress: StrictWfProgress;
   years: StrictWfYearPoint[];
   summary: StrictWfSummary;
+  equity_curve: StrictWfEquityCurve;
 }
 
 // --- Paper trading -----------------------------------------------------------
