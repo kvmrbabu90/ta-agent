@@ -759,17 +759,14 @@ def get_model_info(duck: duckdb.DuckDBPyConnection, universe: str) -> ModelInfoR
 # ---------------------------------------------------------------------------
 
 # Tax rates per universe. Match the existing tax_adjusted_comparison.py
-# defaults (US 25% blended STCG, 15% LTCG). India numbers reflect the
-# post-July-2024 budget: 20% STCG, 12.5% LTCG.
+# defaults (US 25% blended STCG, 15% LTCG).
 _TAX_RATES = {
     "SP500": {"strategy_stcg": 0.25, "benchmark_ltcg": 0.15},
-    "NIFTY100": {"strategy_stcg": 0.20, "benchmark_ltcg": 0.125},
 }
 
 # Per-universe benchmark mapping.
 _BENCHMARK = {
     "SP500": ("SPY", "SPY B&H", "USD"),
-    "NIFTY100": ("NIFTYBEES", "NIFTY 50 ETF (NIFTYBEES) B&H", "INR"),
 }
 
 
@@ -785,10 +782,8 @@ def _strategy_per_year_returns(universe: str) -> pd.DataFrame:
     # cached paper.sqlite entry. For simplicity we always re-run if a cached
     # equity curve isn't found for the canonical analysis run_id.
     canonical_run_id = f"wf_{universe.lower()}_canon"
-    paper_db = "data/processed/india_phase_a/analysis.sqlite" if universe == "NIFTY100" \
-        else "data/processed/walkforward_10yr/analysis.sqlite"
-    preds_db = "data/processed/india_phase_a/walkforward/predictions.sqlite" if universe == "NIFTY100" \
-        else "data/processed/walkforward_10yr/predictions.sqlite"
+    paper_db = "data/processed/walkforward_10yr/analysis.sqlite"
+    preds_db = "data/processed/walkforward_10yr/predictions.sqlite"
 
     import os
     if not os.path.exists(preds_db):
@@ -814,7 +809,7 @@ def _strategy_per_year_returns(universe: str) -> pd.DataFrame:
             universe=universe,
             predictions_sqlite_path=preds_db,
             paper_db_path=paper_db,
-            commission_model="india_zerodha" if universe == "NIFTY100" else "ibkr_lite",
+            commission_model="ibkr_lite",
         )
         backtest(cfg)
 
@@ -974,15 +969,6 @@ _STRICT_WF_PATHS = {
         "commission": "ibkr_lite",
         "expected_retrains": 132,  # 11 years × 12 monthly retrains
     },
-    "NIFTY100": {
-        "preds": "data/processed/wf_nifty100_strict/predictions.sqlite",
-        "paper": "data/processed/wf_nifty100_strict/analysis_live.sqlite",
-        "commission": "india_zerodha",
-        # 124 = monthly retrains over the strict NIFTY100 window
-        # 2016-01-01 → 2026-04-30 (10y 4m). SP500 is 132 because that
-        # WF spans 2014-01-01 → 2024-12-31 (11y).
-        "expected_retrains": 124,
-    },
 }
 
 
@@ -1121,25 +1107,18 @@ def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgres
 
 
 # Tax rates used by the Live WF year table (display-only — the pre-tax
-# pipeline is unchanged). 30% blanket US short-term, 15% India short-term.
-_STRICT_WF_TAX_RATES = {"SP500": 0.30, "NIFTY100": 0.15}
+# pipeline is unchanged). 30% blanket US short-term capital gains.
+_STRICT_WF_TAX_RATES = {"SP500": 0.30}
 
 # LTCG rates applied to the benchmark cumulative return (B&H investor
-# who sells once at the end of the window).
-#   SP500    → 15% (US federal LTCG, mid-bracket; Texas resident → no
-#               state income tax add-on).
-#   NIFTY100 → 12.5% (India LTCG on listed equity).
-_STRICT_WF_BENCH_LTCG = {"SP500": 0.15, "NIFTY100": 0.125}
+# who sells once at the end of the window). 15% US federal LTCG,
+# mid-bracket; Texas resident → no state income tax add-on.
+_STRICT_WF_BENCH_LTCG = {"SP500": 0.15}
 
 # Display starting capital per universe. The paper-engine simulates at
 # $1,000 base regardless; we rescale the equity series on the way out
-# so the UI shows realistic local-currency amounts:
-#   SP500    → $1,000
-#   NIFTY100 → ₹1,00,000 (1 lakh)
-# Returns/multiples/%s are invariant to starting capital so they don't
-# need touching — only the absolute equity series and starting_capital
-# tile value get scaled.
-_STRICT_WF_STARTING_CAPITAL = {"SP500": 1000.0, "NIFTY100": 100_000.0}
+# so the UI shows realistic local-currency amounts.
+_STRICT_WF_STARTING_CAPITAL = {"SP500": 1000.0}
 
 
 def _strict_max_trade_date(paper_path: str, run_id: str):

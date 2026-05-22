@@ -16,15 +16,13 @@ from packages.ingestion.universe.membership import (
     members_on,
     refresh_all_universes,
 )
-from packages.ingestion.universe.nifty100_history import build_nifty100_membership
-from packages.ingestion.universe.nifty100_pit import build_nifty100_pit_membership
 from packages.ingestion.universe.sp500_history import build_sp500_membership
 
 
 @click.command()
 @click.option(
     "--universe",
-    type=click.Choice(["SP500", "NIFTY100", "ALL"]),
+    type=click.Choice(["SP500", "ALL"]),
     default="ALL",
     help="Which universe to refresh",
 )
@@ -34,25 +32,12 @@ from packages.ingestion.universe.sp500_history import build_sp500_membership
     help="Show members as of this date (YYYY-MM-DD) after refresh",
 )
 @click.option("--show/--no-show", default=False, help="Print members after refresh")
-@click.option(
-    "--pit-india/--no-pit-india",
-    default=False,
-    help=(
-        "Use PIT reconstruction for NIFTY 100 from "
-        "configs/universes/nifty100_changes.yaml (otherwise current snapshot only)."
-    ),
-)
-def main(universe: str, as_of: str | None, show: bool, pit_india: bool) -> None:
+def main(universe: str, as_of: str | None, show: bool) -> None:
     if universe == "ALL":
-        counts = refresh_all_universes(pit_india=pit_india)
-    elif universe == "SP500":
+        counts = refresh_all_universes()
+    else:
         df = build_sp500_membership()
         counts = {"SP500": upsert_membership(df)}
-    else:
-        df = (
-            build_nifty100_pit_membership() if pit_india else build_nifty100_membership()
-        )
-        counts = {"NIFTY100": upsert_membership(df)}
 
     log.info(f"Wrote: {counts}")
 

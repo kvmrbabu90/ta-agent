@@ -8,19 +8,11 @@ import pandas as pd
 
 from packages.common.logging import log
 from packages.ingestion.storage import query_membership_at, upsert_membership
-from packages.ingestion.universe.nifty100_history import build_nifty100_membership
-from packages.ingestion.universe.nifty100_pit import build_nifty100_pit_membership
 from packages.ingestion.universe.sp500_history import build_sp500_membership
 
 
-def refresh_all_universes(*, pit_india: bool = False) -> dict[str, int]:
+def refresh_all_universes() -> dict[str, int]:
     """Rebuild and persist membership for all supported universes.
-
-    Args:
-        pit_india: When True, NIFTY 100 is reconstructed from
-            ``configs/universes/nifty100_changes.yaml`` + today's snapshot.
-            When False (default), NIFTY 100 is the current snapshot only
-            (Phase A — survivorship-biased on pre-rebalance dates).
 
     Returns a dict of universe -> rows written.
     """
@@ -29,14 +21,6 @@ def refresh_all_universes(*, pit_india: bool = False) -> dict[str, int]:
     log.info("Refreshing S&P 500 membership")
     sp = build_sp500_membership()
     counts["SP500"] = upsert_membership(sp)
-
-    if pit_india:
-        log.info("Refreshing NIFTY 100 membership (PIT reconstruction)")
-        ni = build_nifty100_pit_membership()
-    else:
-        log.info("Refreshing NIFTY 100 membership (current snapshot only)")
-        ni = build_nifty100_membership()
-    counts["NIFTY100"] = upsert_membership(ni)
 
     log.info(f"Universe refresh complete: {counts}")
     return counts

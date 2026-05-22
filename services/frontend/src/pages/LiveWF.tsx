@@ -43,7 +43,6 @@ function fmtRelativeUtc(iso: string | null): string {
 
 export function LiveWFPage() {
   const sp500 = useStrictWf('SP500');
-  const nifty = useStrictWf('NIFTY100');
 
   return (
     <div className="space-y-6">
@@ -57,7 +56,6 @@ export function LiveWFPage() {
       </div>
 
       <UniverseSection title="SP500 (US)" data={sp500.data} loading={sp500.isLoading} error={sp500.error} />
-      <UniverseSection title="NIFTY100 (India)" data={nifty.data} loading={nifty.isLoading} error={nifty.error} />
     </div>
   );
 }

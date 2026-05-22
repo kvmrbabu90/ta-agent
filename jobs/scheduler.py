@@ -175,38 +175,6 @@ def _job_us_ct_pipeline() -> None:
     log.info("[scheduler] us_ct_pipeline: complete")
 
 
-def _job_india_ingest() -> None:
-    from packages.ingestion.adapters.kite_adapter import daily_update
-
-    _safe_run("india_ingest", lambda: daily_update("NIFTY100"))
-
-
-def _job_india_ct_pipeline() -> None:
-    """India counterpart to ``_job_us_ct_pipeline``. Fires once per day in
-    the early CT morning (NSE closes 03:30 PM IST = ~01:00 AM CT in CST,
-    ~02:00 AM CT in CDT). At 06:00 AM CT we're 4-5 hours past close — Kite
-    has settled the day's bars, and Phase A's paper backtest can run.
-
-    Steps:
-      1. India OHLCV refresh (Kite, NIFTY100)
-      2. daily_predict — iterates BOTH universes but only India will be
-         a trading day at this hour (US is overnight), so SP500 fires
-         a no-op skip and NIFTY100 produces today's picks
-      3. settlement catchup
-      4. paper backtest replay (same engine; will pick up NIFTY100 too
-         once paper backtest is generalized — for now this is the US
-         curve refresh on cached data)
-      5. drift check
-    """
-    log.info("[scheduler] india_ct_pipeline: starting")
-    _job_india_ingest()
-    _job_daily_predict()
-    _job_settlement_catchup()
-    _job_paper_backtest()
-    _job_drift_check()
-    log.info("[scheduler] india_ct_pipeline: complete")
-
-
 def _job_daily_predict() -> None:
     from jobs.daily_predict import run as predict_run
 
@@ -286,26 +254,8 @@ def make_scheduler() -> BlockingScheduler:
         max_instances=1,
         coalesce=True,
     )
-    sched.add_job(
-        _job_india_ingest,
-        CronTrigger(day_of_week="mon-fri", hour=10, minute=30, timezone="UTC"),
-        id="india_ingest",
-        name="India daily ingest (Kite → NIFTY100)",
-        max_instances=1,
-        coalesce=True,
-    )
 
     # --- Daily predict ----------------------------------------------------
-    # daily_predict orchestrates BOTH universes (SP500 + NIFTY100) and skips
-    # automatically on non-trading days, so two firings per day cover both.
-    sched.add_job(
-        _job_daily_predict,
-        CronTrigger(day_of_week="mon-fri", hour=11, minute=0, timezone="UTC"),
-        id="daily_predict_in",
-        name="Daily predict (post-IST close)",
-        max_instances=1,
-        coalesce=True,
-    )
     sched.add_job(
         _job_daily_predict,
         CronTrigger(day_of_week="mon-fri", hour=23, minute=0, timezone="UTC"),

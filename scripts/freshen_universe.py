@@ -1,12 +1,11 @@
 """Refresh universe membership and backfill any newly-added symbols.
 
     python -m scripts.freshen_universe --universe SP500
-    python -m scripts.freshen_universe --universe NIFTY100 --lookback-years 2
 
 Workflow:
-    1. Rebuild membership (Wikipedia for SP500, niftyindices.com for NIFTY100).
+    1. Rebuild membership (Wikipedia for SP500).
     2. Find members that have ZERO bars in ohlcv_daily and backfill them
-       through the appropriate adapter (IB for SP500, Kite for NIFTY100).
+       through IB.
 
 This is the right tool to run after a quarterly index reconstitution.
 """
@@ -42,7 +41,7 @@ def _new_members_without_bars(universe: str, members: list[str]) -> list[str]:
 @click.command()
 @click.option(
     "--universe",
-    type=click.Choice(["SP500", "NIFTY100"]),
+    type=click.Choice(["SP500"]),
     required=True,
 )
 @click.option(
@@ -81,14 +80,9 @@ def main(universe: str, lookback_years: int, dry_run: bool) -> None:
 
     end = today
     start = end - timedelta(days=365 * lookback_years)
-    if universe == "SP500":
-        from packages.ingestion.adapters.ib_adapter import backfill_universe
+    from packages.ingestion.adapters.ib_adapter import backfill_universe
 
-        result = backfill_universe(universe, start, end, symbols=new_syms)
-    else:
-        from packages.ingestion.adapters.kite_adapter import backfill_universe
-
-        result = backfill_universe(universe, start, end, symbols=new_syms)
+    result = backfill_universe(universe, start, end, symbols=new_syms)
     click.echo(f"\nBackfill summary: {result}")
 
 

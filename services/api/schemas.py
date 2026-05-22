@@ -348,9 +348,8 @@ class StrictWfYearPoint(_BaseResponse):
     # has fully elapsed in the WF (so partial-year picks aren't unfairly
     # taxed before they've had a chance to settle). For losing years the
     # value equals strategy_return_pct (losses pass through; capital-loss
-    # carryforward is not modeled at this level). Rates:
-    #   SP500    → 30% short-term US gains
-    #   NIFTY100 → 15% short-term India gains
+    # carryforward is not modeled at this level). Rate: 30% short-term
+    # US capital gains.
     strategy_return_after_tax_pct: float | None = None
     benchmark_return_pct: float | None = None
     excess_pct: float | None = None
@@ -372,10 +371,8 @@ class StrictWfSummary(_BaseResponse):
     strategy_multiple_after_tax: float | None = None
     benchmark_cum_return_pct: float = 0.0
     # Benchmark cum after LTCG — assumes a single liquidation at the
-    # final date (B&H investor sells once). Rates:
-    #   SP500    → 15% (US federal LTCG, mid-bracket; Texas has no
-    #              state income tax so no add-on).
-    #   NIFTY100 → 12.5% (India LTCG on listed equity, current law).
+    # final date (B&H investor sells once). 15% US federal LTCG,
+    # mid-bracket; Texas resident → no state income tax add-on.
     # Populated only when bench_cum_return_pct > 0 (no tax on losses).
     benchmark_cum_return_after_tax_pct: float | None = None
     strategy_annualized_pct: float = 0.0

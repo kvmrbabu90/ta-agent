@@ -36,14 +36,6 @@ UNIVERSES = [
         "benchmark_label": "SPY",
         "currency": "USD",
     },
-    {
-        "name": "NIFTY100",
-        "paper": "data/processed/wf_nifty100_strict/analysis_live.sqlite",
-        "run_id": "strict_wf_live_nifty100",
-        "benchmark_sym": "NIFTYBEES",
-        "benchmark_label": "NIFTYBEES",
-        "currency": "INR",
-    },
 ]
 
 

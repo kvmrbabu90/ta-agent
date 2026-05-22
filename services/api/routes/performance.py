@@ -47,7 +47,14 @@ def strict_wf(
     """Live status of the strict (per-retrain Optuna, no look-ahead) WF.
     Polls predictions.sqlite mtime + count; returns per-year metrics +
     progress + ETA. Cached in-memory by file mtime."""
-    return get_strict_wf_status(duck, universe)
+    from fastapi import HTTPException
+    try:
+        return get_strict_wf_status(duck, universe)
+    except ValueError as exc:
+        # Unknown universe → 404 rather than a 500 stack trace. Happens
+        # if a stale client (or someone curl-poking) requests a universe
+        # we no longer support.
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/walkforward/{universe}", response_model=WalkforwardResponse)
