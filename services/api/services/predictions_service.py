@@ -1585,31 +1585,41 @@ def get_strict_wf_month_detail(
         c.close()
     except sqlite3.Error:
         pos_rows = []
-    # Compute symbol -> (days_held, sum of position market values across days)
-    # Then weight = symbol_mv / total_eq_on_that_date.
+    # Holdings aggregation. The strategy uses a rolling-tranche rebalance:
+    # one new lot per trading day, each lot held for ~5 days. So multiple
+    # lots can co-exist for the same symbol on a given day. To compute
+    # "average weight in portfolio", we must:
+    #   1. Sum all lot weights per (symbol, date) → that day's TOTAL
+    #      symbol weight.
+    #   2. Average those daily totals over the days the symbol was held.
+    # The previous version averaged per-LOT weight, which under-counted
+    # by ~3-5x when overlapping tranches existed.
     if pos_rows and dates:
         eq_by_date = dict(zip(dates, equity))
         from collections import defaultdict
-        sym_days: dict[str, set] = defaultdict(set)
-        sym_weight_sum: dict[str, float] = defaultdict(float)
-        sym_weight_n: dict[str, int] = defaultdict(int)
+        # (symbol, date) → sum of lot weights on that day
+        sym_date_weight: dict[tuple[str, str], float] = defaultdict(float)
         for trade_date, symbol, qty, entry_price in pos_rows:
             td_str = str(trade_date)
             if td_str not in eq_by_date or eq_by_date[td_str] <= 0:
                 continue
             mv = float(qty) * float(entry_price)
-            weight = mv / eq_by_date[td_str]
-            sym_days[symbol].add(td_str)
-            sym_weight_sum[symbol] += weight
-            sym_weight_n[symbol] += 1
+            sym_date_weight[(symbol, td_str)] += mv / eq_by_date[td_str]
+        # symbol → list of daily total weights (length = days_held)
+        sym_daily_weights: dict[str, list[float]] = defaultdict(list)
+        for (sym, _td), w in sym_date_weight.items():
+            sym_daily_weights[sym].append(w)
         holdings: list[StrictWfHolding] = []
-        for sym in sym_days:
-            avg_w = sym_weight_sum[sym] / sym_weight_n[sym] if sym_weight_n[sym] > 0 else 0
+        for sym, weights in sym_daily_weights.items():
+            if not weights:
+                continue
+            avg_w = sum(weights) / len(weights)
             holdings.append(StrictWfHolding(
                 symbol=sym,
-                days_held=len(sym_days[sym]),
+                days_held=len(weights),
                 avg_weight_pct=avg_w * 100,
             ))
+        # Sort by days_held desc, breaking ties by avg_weight desc.
         holdings.sort(key=lambda h: (h.days_held, h.avg_weight_pct), reverse=True)
         detail.top_holdings = holdings[:10]
 
