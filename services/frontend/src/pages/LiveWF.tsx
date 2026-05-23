@@ -704,7 +704,12 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
               After Tax
             </th>
             <th className="px-3 py-2 text-right">{benchKey}</th>
-            <th className="px-3 py-2 text-right">Excess</th>
+            <th
+              className="px-3 py-2 text-right"
+              title={`After-tax strategy return − ${benchKey} pre-tax return. ${benchKey} LTCG is intentionally ignored here so the comparison is "what the strategy actually keeps" vs "what the benchmark prints". Populated only at end of calendar year (when after-tax is available).`}
+            >
+              Excess (a/t)
+            </th>
             <th className="px-3 py-2 text-right">Sharpe</th>
             <th className="px-3 py-2 text-right">Max DD</th>
             <th className="px-3 py-2 text-right">Days</th>
@@ -733,9 +738,30 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
               <td className={`px-3 py-2 text-right font-mono ${(y.benchmark_return_pct ?? 0) >= 0 ? 'text-sky-400' : 'text-rose-400'}`}>
                 {y.benchmark_return_pct != null ? pctFmt(y.benchmark_return_pct, true) : '—'}
               </td>
-              <td className={`px-3 py-2 text-right font-mono ${(y.excess_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {y.excess_pct != null ? pctFmt(y.excess_pct, true) : '—'}
-              </td>
+              {(() => {
+                // After-tax excess: strategy_after_tax − benchmark (pre-tax).
+                // Ignored SPY LTCG per spec — answers "what the strategy
+                // keeps vs what the benchmark prints". Falls back to em-dash
+                // when the year hasn't completed yet (after_tax is null).
+                const atExcess =
+                  y.strategy_return_after_tax_pct != null &&
+                  y.benchmark_return_pct != null
+                    ? y.strategy_return_after_tax_pct - y.benchmark_return_pct
+                    : null;
+                return (
+                  <td
+                    className={`px-3 py-2 text-right font-mono ${
+                      atExcess == null
+                        ? 'text-gray-500'
+                        : atExcess >= 0
+                          ? 'text-emerald-400'
+                          : 'text-rose-400'
+                    }`}
+                  >
+                    {atExcess != null ? pctFmt(atExcess, true) : '—'}
+                  </td>
+                );
+              })()}
               <td className={`px-3 py-2 text-right font-mono ${(y.sharpe ?? 0) >= 0 ? 'text-gray-200' : 'text-rose-400'}`}>
                 {numFmt(y.sharpe, 2)}
               </td>
