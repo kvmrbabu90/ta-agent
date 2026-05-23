@@ -1094,18 +1094,45 @@ def _strict_wf_progress(preds_path: str, expected_total: int) -> StrictWfProgres
             "SELECT COUNT(DISTINCT strftime('%Y-%m', as_of)) FROM predictions_log"
         ).fetchone()[0]
         progress.retrains_complete = int(retrains)
-    c.close()
-    # Compute avg retrain pace from mtime windows. Cheapest approximation:
-    # if more than 1 retrain done, divide elapsed since first retrain by N-1.
-    # We don't have first-retrain time, so just use a fixed ~75 min default.
+    # Rolling-average retrain pace from the actual completion timestamps
+    # of the last few retrains. Each retrain writes its window of rows
+    # in one batch, so MAX(created_at) per (year, month) of as_of is a
+    # good proxy for that retrain's finish time. Diffing consecutive
+    # finish times gives per-retrain wall-clock duration.
     if progress.retrains_complete > 0 and progress.retrains_complete < expected_total:
-        avg_min = 75.0  # heuristic; matches observed ~73-78 min/retrain
+        try:
+            ts_rows = c.execute(
+                "SELECT strftime('%Y-%m', as_of) AS ym, MAX(created_at) AS finished_at "
+                "FROM predictions_log GROUP BY ym ORDER BY ym"
+            ).fetchall()
+        except sqlite3.Error:
+            ts_rows = []
+        finishes: list[datetime] = []
+        for _ym, ts in ts_rows:
+            if not ts:
+                continue
+            try:
+                finishes.append(datetime.fromisoformat(str(ts)).replace(tzinfo=timezone.utc))
+            except ValueError:
+                pass
+        # Use the last 5 retrains for a rolling average — responsive to
+        # recent pace changes (e.g. when contention from a second WF
+        # process is removed). Fall back to 75 min if we have <2 samples.
+        avg_min = 75.0
+        if len(finishes) >= 2:
+            sample = finishes[-6:]  # 6 timestamps → 5 deltas
+            deltas_min = [
+                (sample[i] - sample[i - 1]).total_seconds() / 60.0
+                for i in range(1, len(sample))
+            ]
+            avg_min = float(sum(deltas_min) / len(deltas_min))
         progress.avg_retrain_minutes = avg_min
         remaining = expected_total - progress.retrains_complete
         eta_seconds = remaining * avg_min * 60
         progress.eta_completion_utc = (
             datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)
         ).isoformat()
+    c.close()
     return progress
 
 
