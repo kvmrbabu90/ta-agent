@@ -400,10 +400,10 @@ function EquityCurveChart({
         <div className="text-[11px] text-gray-500">
           starts at{' '}
           <span className="font-mono text-gray-300">{fmtMoney(startingCapital, currency)}</span> ·{' '}
-          <span className="text-emerald-400">pre-tax</span>
+          <span className="text-emerald-400/70">pre-tax (dotted)</span>
           {hasPostTax ? (
             <>
-              {' · '}<span className="text-emerald-400/70">post-tax</span>
+              {' · '}<span className="text-emerald-400">post-tax (solid)</span>
             </>
           ) : null}
           {hasBench ? (
@@ -449,6 +449,8 @@ function EquityCurveChart({
               dataKey="pre"
               name="pre-tax"
               stroke={CHART_GREEN}
+              strokeOpacity={0.55}
+              strokeDasharray="3 3"
               strokeWidth={1.5}
               dot={false}
               isAnimationActive={false}
@@ -459,8 +461,6 @@ function EquityCurveChart({
                 dataKey="post"
                 name="post-tax"
                 stroke={CHART_GREEN}
-                strokeOpacity={0.55}
-                strokeDasharray="3 3"
                 strokeWidth={1.5}
                 dot={false}
                 isAnimationActive={false}
