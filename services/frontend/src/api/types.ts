@@ -196,6 +196,36 @@ export interface StrictWfSummary {
   strategy_multiple: number;
 }
 
+export interface StrictWfDailyPoint {
+  date: string;
+  strategy_pct: number | null;
+  benchmark_pct: number | null;
+  excess_pct: number | null;
+}
+
+export interface StrictWfHolding {
+  symbol: string;
+  days_held: number;
+  avg_weight_pct: number;
+}
+
+export interface StrictWfMonthDetail {
+  universe: string;
+  year: number;
+  month: number;
+  n_days: number;
+  strategy_pct: number | null;
+  benchmark_pct: number | null;
+  excess_pct: number | null;
+  sharpe: number | null;
+  max_dd_pct: number | null;
+  vol_pct: number | null;
+  daily: StrictWfDailyPoint[];
+  best_days: StrictWfDailyPoint[];
+  worst_days: StrictWfDailyPoint[];
+  top_holdings: StrictWfHolding[];
+}
+
 export interface StrictWfMonthlyExcessCell {
   year: number;
   month: number; // 1..12

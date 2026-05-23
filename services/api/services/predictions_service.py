@@ -34,6 +34,9 @@ from services.api.schemas import (
     PerformanceResponse,
     StockHistoryResponse,
     StrategyEquityPoint,
+    StrictWfDailyPoint,
+    StrictWfHolding,
+    StrictWfMonthDetail,
     StrictWfProgress,
     StrictWfResponse,
     StrictWfSummary,
@@ -1409,6 +1412,181 @@ def _strict_cum_after_tax_multiple(
         else:
             m *= 1 + r
     return m
+
+
+def get_strict_wf_month_detail(
+    duck: duckdb.DuckDBPyConnection, universe: str, year: int, month: int
+) -> StrictWfMonthDetail:
+    """Drill-down for a single heatmap cell. Pure quantitative derivation
+    from paper_equity + paper_positions + ohlcv_daily.
+
+    - Daily strategy returns from paper_equity close_5pm_ct snapshots
+    - Daily benchmark returns from ohlcv_daily close prices
+    - Best / worst 3 days by EXCESS (strategy − benchmark) pct
+    - Top 10 holdings by average position-weight over the month
+    """
+    import math
+    import os
+    import sqlite3
+    from datetime import date as _date
+    from calendar import monthrange
+
+    cfg = _STRICT_WF_PATHS.get(universe)
+    if cfg is None:
+        raise ValueError(f"no strict-WF config for universe={universe!r}")
+
+    bench_sym, _bench_label, _currency = _BENCHMARK.get(
+        universe, ("SPY", "SPY B&H", "USD")
+    )
+    paper_path = cfg["paper"]
+    run_id = f"strict_wf_live_{universe.lower()}"
+
+    # Month bounds.
+    last_day_of_month = monthrange(year, month)[1]
+    start_d = _date(year, month, 1)
+    end_d = _date(year, month, last_day_of_month)
+
+    detail = StrictWfMonthDetail(universe=universe, year=year, month=month)
+
+    if not os.path.exists(paper_path):
+        return detail
+
+    # Strategy daily equity over the month.
+    try:
+        c = sqlite3.connect(paper_path)
+        rows = c.execute(
+            "SELECT trade_date, equity FROM paper_equity "
+            "WHERE run_id=? AND snapshot_kind='close_5pm_ct' "
+            "AND trade_date >= ? AND trade_date <= ? "
+            "ORDER BY trade_date",
+            [run_id, start_d.isoformat(), end_d.isoformat()],
+        ).fetchall()
+        c.close()
+    except sqlite3.Error:
+        return detail
+    if not rows:
+        return detail
+
+    dates = [str(r[0]) for r in rows]
+    equity = [float(r[1]) for r in rows]
+    # Daily strategy returns: i = 0 has no prior, so first daily pct uses
+    # NaN — but we still emit the row with strategy_pct=None for chart
+    # continuity. Subsequent days are (eq[i]/eq[i-1] - 1) * 100.
+    strat_daily: list[float | None] = [None]
+    for i in range(1, len(equity)):
+        if equity[i - 1] > 0:
+            strat_daily.append((equity[i] / equity[i - 1] - 1) * 100)
+        else:
+            strat_daily.append(None)
+
+    # Benchmark daily closes over the same window.
+    bench_rows = duck.execute(
+        "SELECT bar_date, close FROM ohlcv_daily "
+        "WHERE symbol = ? AND bar_date >= ? AND bar_date <= ? ORDER BY bar_date",
+        [bench_sym, start_d, end_d],
+    ).fetchall()
+    bench_by_date: dict[str, float] = {
+        str(d): float(c) for d, c in bench_rows
+    }
+    bench_dates_sorted = sorted(bench_by_date)
+    bench_daily_pct_by_date: dict[str, float] = {}
+    for i in range(1, len(bench_dates_sorted)):
+        prev = bench_by_date[bench_dates_sorted[i - 1]]
+        cur = bench_by_date[bench_dates_sorted[i]]
+        if prev > 0:
+            bench_daily_pct_by_date[bench_dates_sorted[i]] = (cur / prev - 1) * 100
+
+    daily_points: list[StrictWfDailyPoint] = []
+    for i, d_str in enumerate(dates):
+        s = strat_daily[i]
+        b = bench_daily_pct_by_date.get(d_str)
+        e = (s - b) if (s is not None and b is not None) else None
+        daily_points.append(StrictWfDailyPoint(
+            date=d_str,
+            strategy_pct=s,
+            benchmark_pct=b,
+            excess_pct=e,
+        ))
+    detail.daily = daily_points
+    detail.n_days = len(dates)
+
+    # Month headline: first → last close.
+    first_eq = equity[0]
+    last_eq = equity[-1]
+    if first_eq > 0:
+        detail.strategy_pct = (last_eq / first_eq - 1) * 100
+    # Benchmark month headline: first → last close in the month.
+    if bench_dates_sorted:
+        b_first = bench_by_date[bench_dates_sorted[0]]
+        b_last = bench_by_date[bench_dates_sorted[-1]]
+        if b_first > 0:
+            detail.benchmark_pct = (b_last / b_first - 1) * 100
+    if detail.strategy_pct is not None and detail.benchmark_pct is not None:
+        detail.excess_pct = detail.strategy_pct - detail.benchmark_pct
+
+    # Risk stats from intra-month daily returns.
+    rets = [r for r in strat_daily[1:] if r is not None]
+    if len(rets) > 1:
+        mu = sum(rets) / len(rets)
+        sigma = (sum((r - mu) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
+        if sigma > 0:
+            detail.sharpe = (mu / sigma) * math.sqrt(252)
+            detail.vol_pct = sigma * math.sqrt(252)  # annualized stdev in pct points
+    peak = equity[0]
+    dd_max = 0.0
+    for e_v in equity:
+        peak = max(peak, e_v)
+        if peak > 0:
+            dd_max = max(dd_max, (peak - e_v) / peak)
+    detail.max_dd_pct = dd_max * 100
+
+    # Best / worst 3 days by EXCESS pct.
+    days_with_excess = [d for d in daily_points if d.excess_pct is not None]
+    days_with_excess.sort(key=lambda d: d.excess_pct, reverse=True)
+    detail.best_days = days_with_excess[:3]
+    detail.worst_days = days_with_excess[-3:][::-1]  # most negative first
+
+    # Top holdings: aggregate paper_positions over the month.
+    try:
+        c = sqlite3.connect(paper_path)
+        pos_rows = c.execute(
+            "SELECT trade_date, symbol, qty, entry_price "
+            "FROM paper_positions "
+            "WHERE run_id=? AND trade_date >= ? AND trade_date <= ?",
+            [run_id, start_d.isoformat(), end_d.isoformat()],
+        ).fetchall()
+        c.close()
+    except sqlite3.Error:
+        pos_rows = []
+    # Compute symbol -> (days_held, sum of position market values across days)
+    # Then weight = symbol_mv / total_eq_on_that_date.
+    if pos_rows and dates:
+        eq_by_date = dict(zip(dates, equity))
+        from collections import defaultdict
+        sym_days: dict[str, set] = defaultdict(set)
+        sym_weight_sum: dict[str, float] = defaultdict(float)
+        sym_weight_n: dict[str, int] = defaultdict(int)
+        for trade_date, symbol, qty, entry_price in pos_rows:
+            td_str = str(trade_date)
+            if td_str not in eq_by_date or eq_by_date[td_str] <= 0:
+                continue
+            mv = float(qty) * float(entry_price)
+            weight = mv / eq_by_date[td_str]
+            sym_days[symbol].add(td_str)
+            sym_weight_sum[symbol] += weight
+            sym_weight_n[symbol] += 1
+        holdings: list[StrictWfHolding] = []
+        for sym in sym_days:
+            avg_w = sym_weight_sum[sym] / sym_weight_n[sym] if sym_weight_n[sym] > 0 else 0
+            holdings.append(StrictWfHolding(
+                symbol=sym,
+                days_held=len(sym_days[sym]),
+                avg_weight_pct=avg_w * 100,
+            ))
+        holdings.sort(key=lambda h: (h.days_held, h.avg_weight_pct), reverse=True)
+        detail.top_holdings = holdings[:10]
+
+    return detail
 
 
 def get_strict_wf_status(

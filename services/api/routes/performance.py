@@ -17,12 +17,14 @@ from services.api.deps import get_duckdb_conn, get_sqlite_conn
 from services.api.schemas import (
     ModelInfoResponse,
     PerformanceResponse,
+    StrictWfMonthDetail,
     StrictWfResponse,
     WalkforwardResponse,
 )
 from services.api.services.predictions_service import (
     get_model_info,
     get_performance,
+    get_strict_wf_month_detail,
     get_strict_wf_status,
     get_walkforward_taxadjusted,
 )
@@ -54,6 +56,28 @@ def strict_wf(
         # Unknown universe → 404 rather than a 500 stack trace. Happens
         # if a stale client (or someone curl-poking) requests a universe
         # we no longer support.
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get(
+    "/strict-wf/{universe}/month/{year}/{month}",
+    response_model=StrictWfMonthDetail,
+)
+def strict_wf_month_detail(
+    universe: str,
+    year: int,
+    month: int,
+    duck=Depends(get_duckdb_conn),
+) -> StrictWfMonthDetail:
+    """Drill-down for a single heatmap cell. Daily strategy/SPY returns,
+    best/worst days by excess, top holdings during the month, risk stats.
+    Used by the UI's click-to-expand cell card."""
+    from fastapi import HTTPException
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail=f"month must be 1..12, got {month}")
+    try:
+        return get_strict_wf_month_detail(duck, universe, year, month)
+    except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 

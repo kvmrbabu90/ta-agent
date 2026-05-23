@@ -3,6 +3,7 @@ import {
   fetchModelInfo,
   fetchPerformance,
   fetchStrictWf,
+  fetchStrictWfMonth,
   fetchWalkforward,
 } from '@/api/performance';
 
@@ -13,6 +14,20 @@ export function useStrictWf(universe: string, refetchMs = 60_000) {
     enabled: Boolean(universe),
     refetchInterval: refetchMs,
     staleTime: 30_000,
+  });
+}
+
+export function useStrictWfMonth(
+  universe: string,
+  year: number | null,
+  month: number | null,
+) {
+  return useQuery({
+    queryKey: ['strict-wf-month', universe, year, month],
+    queryFn: () => fetchStrictWfMonth(universe, year!, month!),
+    // Only fire when both year + month are provided.
+    enabled: Boolean(universe && year && month),
+    staleTime: 60_000,
   });
 }
 

@@ -9,13 +9,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { useState } from 'react';
-import { useStrictWf } from '@/hooks/usePerformance';
+import { useEffect, useState } from 'react';
+import { useStrictWf, useStrictWfMonth } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
 import type {
   StrictWfEquityCurve,
+  StrictWfMonthDetail,
   StrictWfMonthlyExcessCell,
   StrictWfResponse,
   StrictWfYearPoint,
@@ -77,6 +78,8 @@ function UniverseSection({
   loading: boolean;
   error: Error | null;
 }) {
+  const [selectedCell, setSelectedCell] = useState<{ year: number; month: number } | null>(null);
+
   if (loading) return <LoadingSpinner label={`Loading ${title}…`} />;
   if (error) return <ErrorMessage error={error} />;
   if (!data) return null;
@@ -113,8 +116,18 @@ function UniverseSection({
           <MonthlyExcessHeatmap
             cells={data.monthly_excess}
             benchKey={data.benchmark_symbol}
+            onCellClick={(c) => setSelectedCell({ year: c.year, month: c.month })}
           />
           <YearTable years={data.years} benchKey={data.benchmark_symbol} />
+          {selectedCell ? (
+            <MonthDetailModal
+              universe={data.universe}
+              benchKey={data.benchmark_symbol}
+              year={selectedCell.year}
+              month={selectedCell.month}
+              onClose={() => setSelectedCell(null)}
+            />
+          ) : null}
         </>
       )}
     </section>
@@ -426,9 +439,11 @@ type HeatmapMode = 'excess' | 'strategy';
 function MonthlyExcessHeatmap({
   cells,
   benchKey,
+  onCellClick,
 }: {
   cells: StrictWfMonthlyExcessCell[];
   benchKey: string;
+  onCellClick: (cell: StrictWfMonthlyExcessCell) => void;
 }) {
   const [mode, setMode] = useState<HeatmapMode>('excess');
 
@@ -573,11 +588,18 @@ function MonthlyExcessHeatmap({
                   const month = idx + 1;
                   const cell = cellByYM.get(`${y}-${month}`);
                   const v = valueFor(cell);
+                  const clickable = !!cell;
                   return (
                     <td
                       key={month}
-                      title={cellTooltip(cell)}
-                      className="h-7 min-w-[44px] rounded text-center font-mono text-[10px] text-gray-100"
+                      title={cellTooltip(cell) + (clickable ? '\n(click for details)' : '')}
+                      onClick={clickable ? () => onCellClick(cell!) : undefined}
+                      className={[
+                        'h-7 min-w-[44px] rounded text-center font-mono text-[10px] text-gray-100',
+                        clickable
+                          ? 'cursor-pointer hover:outline hover:outline-1 hover:outline-gray-300/50'
+                          : '',
+                      ].join(' ')}
                       style={{
                         backgroundColor: cellBg(v),
                       }}
@@ -653,6 +675,303 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+const MONTH_NAME = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+function MonthDetailModal({
+  universe,
+  benchKey,
+  year,
+  month,
+  onClose,
+}: {
+  universe: string;
+  benchKey: string;
+  year: number;
+  month: number;
+  onClose: () => void;
+}) {
+  const { data, isLoading, error } = useStrictWfMonth(universe, year, month);
+  // ESC key closes
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-lg border border-gray-700 bg-gray-950 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="mb-4 flex items-start justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-100">
+              {MONTH_NAME[month - 1]} {year}
+            </h3>
+            <p className="text-xs text-gray-500">
+              {universe} · vs {benchKey} · click outside or press Esc to close
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded p-1 text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </header>
+        {isLoading && <div className="text-sm text-gray-400">Loading…</div>}
+        {error && <ErrorMessage error={error as Error} />}
+        {data && <MonthDetailBody data={data} benchKey={benchKey} />}
+      </div>
+    </div>
+  );
+}
+
+function MonthDetailBody({ data, benchKey }: { data: StrictWfMonthDetail; benchKey: string }) {
+  const tone = (v: number | null | undefined): string =>
+    v == null
+      ? 'text-gray-400'
+      : v > 0
+        ? 'text-emerald-400'
+        : v < 0
+          ? 'text-rose-400'
+          : 'text-gray-100';
+
+  // Build cumulative-equity series (indexed to 100 at month start) for both
+  // strategy and benchmark so the chart shows the path within the month.
+  const chartData: { date: string; strat: number; bench: number }[] = [];
+  let stratEq = 100;
+  let benchEq = 100;
+  for (const d of data.daily) {
+    if (d.strategy_pct != null) stratEq *= 1 + d.strategy_pct / 100;
+    if (d.benchmark_pct != null) benchEq *= 1 + d.benchmark_pct / 100;
+    chartData.push({ date: d.date, strat: stratEq, bench: benchEq });
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Headline tiles */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <DetailTile
+          label="Strategy"
+          value={data.strategy_pct != null ? pctFmt(data.strategy_pct, true) : '—'}
+          toneClass={tone(data.strategy_pct)}
+        />
+        <DetailTile
+          label={benchKey}
+          value={data.benchmark_pct != null ? pctFmt(data.benchmark_pct, true) : '—'}
+          toneClass={tone(data.benchmark_pct)}
+        />
+        <DetailTile
+          label="Excess"
+          value={data.excess_pct != null ? pctFmt(data.excess_pct, true) : '—'}
+          toneClass={tone(data.excess_pct)}
+        />
+        <DetailTile
+          label="Sharpe / MaxDD"
+          value={`${data.sharpe != null ? data.sharpe.toFixed(2) : '—'} / ${
+            data.max_dd_pct != null ? data.max_dd_pct.toFixed(1) + '%' : '—'
+          }`}
+          toneClass="text-gray-200"
+        />
+      </div>
+
+      {/* Daily equity chart (rebased to 100) */}
+      <div className="rounded border border-gray-800 bg-gray-900/40 p-2">
+        <div className="mb-1 flex items-baseline justify-between text-[11px] text-gray-500">
+          <span className="uppercase tracking-wider">
+            Daily equity path (rebased to 100 at month start)
+          </span>
+          <span>
+            <span className="text-emerald-400">strategy</span>
+            {' · '}
+            <span className="text-sky-400">{benchKey}</span>
+          </span>
+        </div>
+        <div className="h-48 w-full">
+          <ResponsiveContainer>
+            <LineChart data={chartData} margin={{ left: 4, right: 8, top: 4, bottom: 4 }}>
+              <CartesianGrid stroke="#1f2937" />
+              <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#6b7280' }} minTickGap={32} />
+              <YAxis
+                tick={{ fontSize: 10, fill: '#6b7280' }}
+                tickFormatter={(v: number) => v.toFixed(0)}
+                domain={['auto', 'auto']}
+                width={40}
+              />
+              <Tooltip
+                contentStyle={{
+                  fontSize: 11,
+                  backgroundColor: '#0b1220',
+                  border: '1px solid #1f2937',
+                  color: '#e5e7eb',
+                }}
+                formatter={(v: number | string) =>
+                  typeof v === 'number' ? v.toFixed(2) : v
+                }
+              />
+              <Line
+                type="monotone"
+                dataKey="strat"
+                name="strategy"
+                stroke="#34d399"
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="bench"
+                name={benchKey}
+                stroke="#38bdf8"
+                strokeWidth={1.25}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Best / worst days */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <DayList title="Best days (by excess)" days={data.best_days} benchKey={benchKey} />
+        <DayList title="Worst days (by excess)" days={data.worst_days} benchKey={benchKey} />
+      </div>
+
+      {/* Top holdings */}
+      <div className="rounded border border-gray-800 bg-gray-900/40">
+        <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-gray-500">
+          Top holdings during the month (by days held)
+        </div>
+        {data.top_holdings.length === 0 ? (
+          <div className="px-3 py-2 text-sm text-gray-500">No position data.</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="text-[10px] uppercase tracking-wider text-gray-500">
+              <tr>
+                <th className="px-3 py-1.5 text-left">Symbol</th>
+                <th className="px-3 py-1.5 text-right">Days held</th>
+                <th className="px-3 py-1.5 text-right">Avg weight</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {data.top_holdings.map((h) => (
+                <tr key={h.symbol} className="hover:bg-gray-900/60">
+                  <td className="px-3 py-1.5 font-mono text-gray-100">{h.symbol}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-gray-300">
+                    {h.days_held} / {data.n_days}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-gray-300">
+                    {h.avg_weight_pct.toFixed(1)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Footnote */}
+      <div className="text-[10px] text-gray-500">
+        n_days={data.n_days} · vol (annualized) ={' '}
+        {data.vol_pct != null ? `${data.vol_pct.toFixed(1)}%` : '—'} · holdings ranked by days
+        held; ties broken by avg position weight.
+      </div>
+    </div>
+  );
+}
+
+function DetailTile({
+  label,
+  value,
+  toneClass,
+}: {
+  label: string;
+  value: string;
+  toneClass: string;
+}) {
+  return (
+    <div className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
+      <div className={`mt-0.5 font-mono text-base ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function DayList({
+  title,
+  days,
+  benchKey,
+}: {
+  title: string;
+  days: StrictWfMonthDetail['best_days'];
+  benchKey: string;
+}) {
+  return (
+    <div className="rounded border border-gray-800 bg-gray-900/40">
+      <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-gray-500">
+        {title}
+      </div>
+      {days.length === 0 ? (
+        <div className="px-3 py-2 text-sm text-gray-500">No data.</div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="text-[10px] uppercase tracking-wider text-gray-500">
+            <tr>
+              <th className="px-3 py-1 text-left">Date</th>
+              <th className="px-3 py-1 text-right">Strategy</th>
+              <th className="px-3 py-1 text-right">{benchKey}</th>
+              <th className="px-3 py-1 text-right">Excess</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-800">
+            {days.map((d) => (
+              <tr key={d.date}>
+                <td className="px-3 py-1 font-mono text-gray-200">{d.date}</td>
+                <td
+                  className={`px-3 py-1 text-right font-mono ${
+                    (d.strategy_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  }`}
+                >
+                  {d.strategy_pct != null ? pctFmt(d.strategy_pct, true) : '—'}
+                </td>
+                <td
+                  className={`px-3 py-1 text-right font-mono ${
+                    (d.benchmark_pct ?? 0) >= 0 ? 'text-sky-400' : 'text-rose-400'
+                  }`}
+                >
+                  {d.benchmark_pct != null ? pctFmt(d.benchmark_pct, true) : '—'}
+                </td>
+                <td
+                  className={`px-3 py-1 text-right font-mono ${
+                    (d.excess_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  }`}
+                >
+                  {d.excess_pct != null ? pctFmt(d.excess_pct, true) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

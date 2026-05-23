@@ -391,6 +391,55 @@ class StrictWfProgress(_BaseResponse):
     is_running: bool = False                   # heuristic: progress in last 2h
 
 
+class StrictWfDailyPoint(_BaseResponse):
+    """Single trading day inside a strict-WF month detail payload."""
+    date: str
+    strategy_pct: float | None = None
+    benchmark_pct: float | None = None
+    excess_pct: float | None = None
+
+
+class StrictWfHolding(_BaseResponse):
+    """One symbol held during a strict-WF month, with avg exposure stats."""
+    symbol: str
+    days_held: int
+    avg_weight_pct: float
+
+
+class StrictWfMonthDetail(_BaseResponse):
+    """Drill-down payload for a single (year, month) heatmap cell.
+
+    Returned by /performance/strict-wf/{universe}/month/{year}/{month}.
+    Used by the dashboard's click-to-expand cell card. Pure quantitative
+    derivation from paper_equity + paper_positions + ohlcv_daily — no
+    commentary.
+    """
+    universe: str
+    year: int
+    month: int
+    n_days: int = 0
+
+    # Headline pcts (same convention as the heatmap cell — first→last close).
+    strategy_pct: float | None = None
+    benchmark_pct: float | None = None
+    excess_pct: float | None = None
+
+    # Risk stats over the month.
+    sharpe: float | None = None
+    max_dd_pct: float | None = None
+    vol_pct: float | None = None  # annualized stdev of daily returns
+
+    # Daily series for the chart (sorted ascending).
+    daily: list[StrictWfDailyPoint] = Field(default_factory=list)
+
+    # Highlight days within the month (best/worst by EXCESS pct).
+    best_days: list[StrictWfDailyPoint] = Field(default_factory=list)
+    worst_days: list[StrictWfDailyPoint] = Field(default_factory=list)
+
+    # Top holdings during the month (top 10 by avg weight).
+    top_holdings: list[StrictWfHolding] = Field(default_factory=list)
+
+
 class StrictWfMonthlyExcessCell(_BaseResponse):
     """One (year, month) cell of the monthly excess heatmap.
 
