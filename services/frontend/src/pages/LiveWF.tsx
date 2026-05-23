@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useStrictWf, useStrictWfMonth } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
@@ -191,8 +191,80 @@ function ProgressBar({ data }: { data: StrictWfResponse }) {
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>
+      <NextRetrainCountdown
+        lastRetrainAtUtc={p.last_retrain_at_utc}
+        avgRetrainMinutes={p.avg_retrain_minutes}
+        isRunning={p.is_running}
+      />
     </div>
   );
+}
+
+// Live countdown to next expected retrain completion. Re-derived from
+// last_retrain_at_utc + avg_retrain_minutes; ticks every second.
+function NextRetrainCountdown({
+  lastRetrainAtUtc,
+  avgRetrainMinutes,
+  isRunning,
+}: {
+  lastRetrainAtUtc: string | null;
+  avgRetrainMinutes: number | null;
+  isRunning: boolean;
+}) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (!lastRetrainAtUtc || avgRetrainMinutes == null) return null;
+  // Backend emits naive ISO (utcnow().isoformat()); add 'Z' if it has no zone marker.
+  const iso = /[zZ]|[+-]\d{2}:\d{2}$/.test(lastRetrainAtUtc)
+    ? lastRetrainAtUtc
+    : `${lastRetrainAtUtc}Z`;
+  const lastMs = new Date(iso).getTime();
+  if (Number.isNaN(lastMs)) return null;
+  const nextMs = lastMs + avgRetrainMinutes * 60_000;
+  const remainingMs = nextMs - now;
+  let label: ReactNode;
+  let toneClass = 'text-gray-400';
+  if (remainingMs > 0) {
+    const totalSec = Math.floor(remainingMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    label = (
+      <>
+        Next retrain in{' '}
+        <span className="font-mono text-gray-200">
+          {m}m {s.toString().padStart(2, '0')}s
+        </span>
+      </>
+    );
+    toneClass = 'text-gray-400';
+  } else {
+    // We're past the avg-based ETA — show how overdue. Common when a retrain
+    // happens to take longer than the rolling average (slow Optuna trial, etc.).
+    const overdueSec = Math.floor(-remainingMs / 1000);
+    const m = Math.floor(overdueSec / 60);
+    const s = overdueSec % 60;
+    label = (
+      <>
+        Retrain due — running{' '}
+        <span className="font-mono text-amber-300">
+          {m}m {s.toString().padStart(2, '0')}s
+        </span>{' '}
+        over avg
+      </>
+    );
+    toneClass = 'text-amber-300/80';
+  }
+  if (!isRunning) {
+    return (
+      <div className="text-[11px] text-gray-500">
+        WF idle — no retrain in flight
+      </div>
+    );
+  }
+  return <div className={`text-[11px] ${toneClass}`}>{label}</div>;
 }
 
 function SummaryTiles({ data }: { data: StrictWfResponse }) {
