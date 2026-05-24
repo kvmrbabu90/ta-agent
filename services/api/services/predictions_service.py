@@ -1057,7 +1057,17 @@ def _replay_engine_for_strict(
     return run_id
 
 
-def _strict_wf_per_year(paper_path: str, run_id: str) -> list[StrictWfYearPoint]:
+def _strict_wf_per_year(
+    paper_path: str, run_id: str
+) -> tuple[list[StrictWfYearPoint], dict[int, tuple[object, object]]]:
+    """Return per-year strategy stats AND the strategy's actual
+    first/last trade dates within each year.
+
+    The second return value (year_window) is used to restrict the
+    benchmark comparison to the same date span the strategy traded —
+    so a partial in-progress year compares partial-year strategy to
+    partial-year SPY (apples-to-apples) instead of full calendar SPY.
+    """
     import math, sqlite3
     c = sqlite3.connect(paper_path)
     df = pd.read_sql_query(
@@ -1067,12 +1077,15 @@ def _strict_wf_per_year(paper_path: str, run_id: str) -> list[StrictWfYearPoint]
     )
     c.close()
     if df.empty:
-        return []
+        return [], {}
     df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
     df["year"] = pd.to_datetime(df["trade_date"]).dt.year
     out: list[StrictWfYearPoint] = []
+    year_window: dict[int, tuple[object, object]] = {}
     for year, g in df.groupby("year"):
         eqs = g["equity"].to_numpy()
+        dates_in_year = g["trade_date"].to_list()
+        year_window[int(year)] = (dates_in_year[0], dates_in_year[-1])
         rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs)) if eqs[i - 1] > 0]
         m = sum(rets) / max(len(rets), 1)
         s = (sum((r - m) ** 2 for r in rets) / max(len(rets) - 1, 1)) ** 0.5 if len(rets) > 1 else 0
@@ -1089,12 +1102,45 @@ def _strict_wf_per_year(paper_path: str, run_id: str) -> list[StrictWfYearPoint]
             max_dd_pct=dd * 100,
             n_days=int(len(g)),
         ))
+    return out, year_window
+
+
+def _benchmark_year_returns_pct_in_window(
+    duck: duckdb.DuckDBPyConnection,
+    symbol: str,
+    year_window: dict[int, tuple[object, object]],
+) -> dict[int, float]:
+    """Per-year benchmark return restricted to the strategy's actual
+    trading window for each year. For an in-progress year, this gives
+    the SPY return from the strategy's first trade in the year through
+    its most recent trade — apples-to-apples with the partial-year
+    strategy return.
+    """
+    out: dict[int, float] = {}
+    for year, (first_d, last_d) in year_window.items():
+        rows = duck.execute(
+            "SELECT bar_date, close FROM ohlcv_daily "
+            "WHERE symbol = ? AND bar_date BETWEEN ? AND ? ORDER BY bar_date",
+            [symbol, first_d, last_d],
+        ).fetchall()
+        if len(rows) < 2:
+            continue
+        first_close = float(rows[0][1])
+        last_close = float(rows[-1][1])
+        if first_close > 0:
+            out[int(year)] = (last_close / first_close - 1) * 100
     return out
 
 
 def _benchmark_year_returns_pct(
     duck: duckdb.DuckDBPyConnection, symbol: str
 ) -> dict[int, float]:
+    """Legacy: per-year benchmark return using FULL calendar year close
+    prices for the symbol. Kept for any caller that still wants
+    "what was SPY's full year" rather than "what did SPY do during the
+    same window the strategy traded". The Live WF year table now uses
+    _benchmark_year_returns_pct_in_window instead.
+    """
     rows = duck.execute(
         "SELECT bar_date, close FROM ohlcv_daily WHERE symbol = ? ORDER BY bar_date",
         [symbol],
@@ -1227,26 +1273,27 @@ def _strict_max_trade_date(paper_path: str, run_id: str):
 def _strict_apply_tax(
     universe: str, paper_path: str, run_id: str, years: list[StrictWfYearPoint]
 ) -> None:
-    """Set strategy_return_after_tax_pct on years whose calendar year has
-    fully elapsed in the WF data; leave it None for the in-progress year."""
-    from datetime import date as _date
+    """Set strategy_return_after_tax_pct on every year.
 
+    For completed years this applies the full STCG haircut at end-of-
+    year. For the IN-PROGRESS year, the year's YTD return is also
+    haircut at the STCG rate — i.e. shown "as if the strategy closes
+    every position right now and pays tax on the realized gain." This
+    keeps the year-table after-tax + a/t-excess columns sensible for
+    the in-progress year (otherwise they'd be em-dash until the year
+    completes, which is uninformative).
+
+    Loss years (and loss YTDs) pass through unchanged — no carryforward
+    modeled at this level.
+    """
     rate = _STRICT_WF_TAX_RATES.get(universe, 0.0)
     if rate <= 0 or not years:
         return
-    max_d = _strict_max_trade_date(paper_path, run_id)
-    if max_d is None:
-        return
     for y in years:
-        # A year counts as "complete" once the last trade date in the WF
-        # has reached late December of that year (Dec 28 catches all
-        # calendars whose last trading day falls Dec 28-31).
-        if max_d >= _date(y.year, 12, 28):
-            if y.strategy_return_pct > 0:
-                y.strategy_return_after_tax_pct = y.strategy_return_pct * (1 - rate)
-            else:
-                # Loss: pass through (no carryforward modeled here).
-                y.strategy_return_after_tax_pct = y.strategy_return_pct
+        if y.strategy_return_pct > 0:
+            y.strategy_return_after_tax_pct = y.strategy_return_pct * (1 - rate)
+        else:
+            y.strategy_return_after_tax_pct = y.strategy_return_pct
 
 
 def _strict_build_equity_curve(
@@ -1738,19 +1785,24 @@ def get_strict_wf_status(
             summary=StrictWfSummary(),
         )
 
-    years = _strict_wf_per_year(paper_path, run_id)
-    bench_by_year = _benchmark_year_returns_pct(duck, bench_sym)
+    years, year_window = _strict_wf_per_year(paper_path, run_id)
+    # Benchmark column uses the strategy's actual trading window for
+    # each year (not the full calendar year). For partial in-progress
+    # years this means we compare partial-year strategy to partial-year
+    # SPY — apples-to-apples, no inflated full-year SPY comparator.
+    bench_by_year = _benchmark_year_returns_pct_in_window(
+        duck, bench_sym, year_window
+    )
     for y in years:
         b = bench_by_year.get(y.year)
         y.benchmark_return_pct = b
         if b is not None:
             y.excess_pct = y.strategy_return_pct - b
 
-    # Tax-adjusted strategy return — populated only when the calendar
-    # year has fully elapsed in the data (we look at the latest paper
-    # equity row). Pipeline stays pre-tax; this is a display-only column.
-    # Rates: 30% US short-term, 15% India short-term. Losses pass through
-    # unchanged (no carryforward modeled at this level).
+    # Tax-adjusted strategy return for EVERY year (in-progress years
+    # are taxed as if the strategy closes today). Frontend uses this
+    # for the After Tax column AND the Excess (A/T) = after_tax − bench
+    # column.
     _strict_apply_tax(universe, paper_path, run_id, years)
 
     n_years = max(len(years), 1)
