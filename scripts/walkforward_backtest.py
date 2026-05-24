@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -420,8 +421,15 @@ def run_walkforward(
 
     cal = calendar or _calendar_for(universe)
 
-    # Fresh predictions DB for the walk-forward.
-    Path(preds_path).unlink(missing_ok=True)
+    # Predictions DB — DO NOT UNLINK if it already exists. The previous
+    # version of this script blindly unlinked at every startup, which
+    # destroyed in-flight WF progress when the runner needed to be
+    # restarted. init_predictions_db is idempotent (CREATE TABLE IF NOT
+    # EXISTS), so calling it on an existing file is safe.
+    #
+    # If you genuinely want a fresh run, delete the output directory
+    # manually before launching:
+    #     rm -rf data/processed/walkforward_10yr_strict
     init_predictions_db(preds_path)
 
     log.info(
@@ -458,6 +466,31 @@ def run_walkforward(
     # Iterate retrain windows. Each retrain is responsible for predicting
     # every trading day in [retrain_date, next_retrain_date).
     retrain_dates_padded = retrain_dates + [end + timedelta(days=1)]
+
+    # Resume support: check which retrain windows already have predictions
+    # in the output sqlite. Skip those entirely (no train, no predict).
+    # Identifies a retrain as "done" when predictions exist for the LAST
+    # trading day of its window — guarantees the retrain emitted a full
+    # window, not a partial crash. Cheap: one count query at startup.
+    already_done: set = set()
+    try:
+        import sqlite3 as _sqlite3
+        if os.path.exists(preds_path):
+            _con = _sqlite3.connect(preds_path)
+            rows_existing = _con.execute(
+                "SELECT DISTINCT as_of FROM predictions_log WHERE universe = ?",
+                (universe,),
+            ).fetchall()
+            _con.close()
+            already_done = {str(r[0]) for r in rows_existing}
+            log.info(
+                f"walkforward: resume — found {len(already_done)} existing "
+                f"prediction days in {preds_path}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"walkforward: resume check failed ({exc!r}); will run from scratch")
+        already_done = set()
+
     for i, rd in enumerate(retrain_dates):
         window_end = retrain_dates_padded[i + 1] - timedelta(days=1)
         # Embargo: model can only see data ending `embargo` days before rd.
@@ -466,6 +499,14 @@ def run_walkforward(
         train_end = rd - timedelta(days=_EMBARGO_DAYS + 1)
         days_in_window = [d for d in all_trading if rd <= d <= window_end]
         if not days_in_window:
+            continue
+        # Skip if the LAST day of this retrain's window already has
+        # predictions — i.e. this retrain previously completed cleanly.
+        if str(days_in_window[-1]) in already_done:
+            log.info(
+                f"walkforward: [{i+1}/{len(retrain_dates)}] {rd}: skipping — "
+                f"predictions for last day {days_in_window[-1]} already exist"
+            )
             continue
         t_retrain = time.monotonic()
         try:
