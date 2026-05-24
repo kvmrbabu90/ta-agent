@@ -392,6 +392,24 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
               <th className="px-3 py-2 text-left">Side</th>
               <th className="px-3 py-2 text-right">Qty</th>
               <th className="px-3 py-2 text-right">Entry</th>
+              <th
+                className="px-3 py-2 text-right"
+                title="Entry date of the OLDEST lot for this symbol. When the position is held across multiple overlapping tranches (e.g. rebought daily across 5 days), this shows the first entry."
+              >
+                Entry Date
+              </th>
+              <th
+                className="px-3 py-2 text-right"
+                title="Forced-close date for the position. Computed as entry-of-the-NEWEST lot + holding_days (5) trading days. Position fully closes by then unless the stop fires earlier."
+              >
+                Exit (planned)
+              </th>
+              <th
+                className="px-3 py-2 text-right"
+                title="Stop-loss level. Tightest stop across active lots (highest level for a long). Position closes if price touches this level at the 5pm CT check."
+              >
+                Stop
+              </th>
               <th className="px-3 py-2 text-right">Last</th>
               <th className="px-3 py-2 text-right">P&amp;L</th>
             </tr>
@@ -416,6 +434,13 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">{p.qty.toFixed(3)}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-400">{sym}{p.entry_price.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-500">{p.entry_date}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-500">
+                    {p.planned_exit_date ?? '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-amber-400/80">
+                    {p.stop_level != null ? `${sym}${p.stop_level.toFixed(2)}` : '—'}
+                  </td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">
                     {p.last_price != null ? `${sym}${p.last_price.toFixed(2)}` : '—'}
                   </td>

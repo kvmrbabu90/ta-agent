@@ -212,14 +212,30 @@ def _job_drift_check() -> None:
     below threshold, fire an off-cycle retrain. Catches regime changes
     between scheduled monthly retrains.
 
-    Triggers on the SP500 model only — NIFTY100 lacks enough live data."""
+    Triggers on the SP500 model only — NIFTY100 lacks enough live data.
+
+    HOLD-OFF lock file: when ``data/processed/.no_retrain.lock`` exists,
+    the drift check still runs (so we keep logging rank-IC), but any
+    drift-triggered retrain is suppressed. Used to keep the GPU free
+    for a long-running strict-WF backtest. Delete the lock file to
+    re-enable emergency retrains."""
+    import os
     from jobs.monthly_retrain import run as retrain_run
     from packages.inference.drift import check_drift
+
+    LOCK_PATH = "data/processed/.no_retrain.lock"
 
     def _check_and_maybe_retrain() -> dict:
         verdict = check_drift("SP500")
         if not verdict.get("drifted"):
             return {"drifted": False, **verdict}
+        if os.path.exists(LOCK_PATH):
+            log.warning(
+                f"drift_check: SP500 has drifted, but {LOCK_PATH} is set — "
+                f"suppressing emergency retrain. rank_ic={verdict.get('rank_ic')}, "
+                f"threshold={verdict.get('threshold')}. Delete the lock to re-enable."
+            )
+            return {"drifted": True, "retrain_suppressed_by_lock": True, "verdict": verdict}
         log.warning(
             f"drift_check: SP500 model has drifted "
             f"(rank_ic={verdict.get('rank_ic'):.4f} over {verdict.get('n_dates')} days, "

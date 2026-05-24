@@ -211,6 +211,14 @@ class PaperPosition(_BaseResponse):
     entry_date: date
     last_price: float | None = None
     unrealized_pnl: float = 0.0
+    # Forced-close date from the holding-period rule (entry_date + N trading
+    # days, where N = holding_days). The paper engine guarantees this exit
+    # unless the stop-loss fires first.
+    planned_exit_date: date | None = None
+    # Stop-loss level (price the position closes at if hit). Aggregated
+    # across lots: the HIGHEST stop level across all of this symbol's
+    # active lots (the tightest stop — the most conservative for a long).
+    stop_level: float | None = None
 
 
 class PaperTrade(_BaseResponse):

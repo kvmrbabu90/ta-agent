@@ -109,26 +109,84 @@ def snapshot(
         if last_date_row and last_date_row[0]:
             last_date = date.fromisoformat(last_date_row[0])
             position_rows = conn.execute(
-                "SELECT symbol, side, qty, entry_price, entry_date "
+                "SELECT symbol, side, qty, entry_price, entry_date, stop_level "
                 "FROM paper_positions WHERE run_id = ? AND trade_date = ?",
                 (run_id, last_date.isoformat()),
             ).fetchall()
             # Aggregate lots per (symbol, side). entry_price = qty-weighted avg.
+            # earliest_entry = oldest lot's entry date.
+            # latest_entry = newest lot's entry date (used to compute the
+            # planned exit, which is the FURTHEST-OUT forced-close — the
+            # symbol stays held until the last lot ages out).
+            # stop_level_max = max stop across lots (the tightest active
+            # stop for a long, since any lot hitting it closes that lot).
             agg: dict[tuple[str, str], dict[str, Any]] = {}
-            for sym, side, qty, entry, entry_date in position_rows:
+            for sym, side, qty, entry, entry_date, stop_level in position_rows:
                 key = (sym, side)
                 if key not in agg:
                     agg[key] = {
                         "symbol": sym, "side": side, "qty": 0.0,
-                        "cost_basis": 0.0, "earliest_entry": entry_date,
+                        "cost_basis": 0.0,
+                        "earliest_entry": entry_date,
+                        "latest_entry": entry_date,
+                        "stop_level_max": stop_level,
                     }
                 bucket = agg[key]
                 bucket["qty"] += float(qty)
                 bucket["cost_basis"] += float(qty) * float(entry)
                 if entry_date < bucket["earliest_entry"]:
                     bucket["earliest_entry"] = entry_date
+                if entry_date > bucket["latest_entry"]:
+                    bucket["latest_entry"] = entry_date
+                # Tightest stop = highest stop_level for longs (closer to
+                # last price). None values are ignored; the max() of all
+                # non-None values is taken.
+                if stop_level is not None:
+                    if bucket["stop_level_max"] is None or stop_level > bucket["stop_level_max"]:
+                        bucket["stop_level_max"] = stop_level
             symbols = [sym for sym, _side in agg.keys()]
             last_close_price_by_sym = _last_close_prices(symbols, last_date)
+            # Planned exit = entry_date + holding_days TRADING days (not
+            # calendar days). Use NYSE calendar for SP500. Computed once
+            # then offset per symbol.
+            holding_days = int(getattr(run, "holding_days", None) or 5)
+            # Build a trading-day calendar covering the next ~3 weeks of
+            # business days starting from the latest entry seen.
+            try:
+                import pandas_market_calendars as mcal
+                cal_name = "NYSE"
+                cal = mcal.get_calendar(cal_name)
+                # Look ahead 60 calendar days from the latest entry date,
+                # which always covers 5-10 trading days.
+                latest_entry_str = max(b["latest_entry"] for b in agg.values())
+                latest_entry_dt = date.fromisoformat(latest_entry_str)
+                from datetime import timedelta as _td
+                sched = cal.schedule(
+                    start_date=latest_entry_dt.isoformat(),
+                    end_date=(latest_entry_dt + _td(days=60)).isoformat(),
+                )
+                trading_days = [d.date() for d in sched.index]
+            except Exception:  # noqa: BLE001 — fallback if calendar import fails
+                trading_days = []
+
+            def _planned_exit(entry_str: str) -> date | None:
+                """Entry + holding_days trading days, using NYSE calendar."""
+                entry_dt = date.fromisoformat(entry_str)
+                if not trading_days:
+                    # Fallback: +holding_days*1.4 calendar days (rough proxy).
+                    from datetime import timedelta as _td
+                    return entry_dt + _td(days=int(holding_days * 1.4))
+                # Find entry's index in trading_days, then +holding_days.
+                # If entry is on a trading day, exit = trading_days[i + holding_days].
+                # If entry isn't (rare for paper-trade), find the next trading day.
+                for i, td in enumerate(trading_days):
+                    if td >= entry_dt:
+                        target = i + holding_days
+                        if target < len(trading_days):
+                            return trading_days[target]
+                        return None
+                return None
+
             for (sym, side), bucket in agg.items():
                 qty = bucket["qty"]
                 avg_entry = bucket["cost_basis"] / qty if qty > 0 else 0.0
@@ -151,6 +209,11 @@ def snapshot(
                         entry_date=date.fromisoformat(bucket["earliest_entry"]),
                         last_price=last_px_for_response,
                         unrealized_pnl=unreal,
+                        # Planned exit = latest-lot's entry + holding_days
+                        # (the position fully unwinds when the youngest
+                        # lot expires).
+                        planned_exit_date=_planned_exit(bucket["latest_entry"]),
+                        stop_level=bucket["stop_level_max"],
                     )
                 )
 

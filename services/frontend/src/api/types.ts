@@ -310,6 +310,11 @@ export interface PaperPosition {
   entry_date: string;
   last_price: number | null;
   unrealized_pnl: number;
+  // Forced-close date from holding-period rule (entry + holding_days
+  // trading days). Null if the calendar lookup fails.
+  planned_exit_date: string | null;
+  // Stop-loss level — position closes here if hit. Null if stop disabled.
+  stop_level: number | null;
 }
 
 export interface PaperTrade {
