@@ -1,4 +1,5 @@
 import {
+  Brush,
   CartesianGrid,
   Label,
   Line,
@@ -418,7 +419,7 @@ function EquityCurveChart({
           ) : null}
         </div>
       </div>
-      <div className="h-64 w-full">
+      <div className="h-72 w-full">
         <ResponsiveContainer>
           <LineChart data={data} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
             <CartesianGrid stroke="#1f2937" />
@@ -497,6 +498,17 @@ function EquityCurveChart({
                 />
               </ReferenceDot>
             )}
+            {/* Brush: drag the handles below the chart to zoom into a date
+                range. Y-axis auto-scales to the selected window so vertical
+                detail isn't compressed by the full-history scale. */}
+            <Brush
+              dataKey="date"
+              height={24}
+              stroke="#374151"
+              fill="#0b1220"
+              travellerWidth={8}
+              tickFormatter={(v: string) => v.slice(0, 7)}
+            />
           </LineChart>
         </ResponsiveContainer>
       </div>
