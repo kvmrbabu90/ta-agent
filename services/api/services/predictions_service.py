@@ -978,6 +978,15 @@ _STRICT_WF_PATHS = {
 # In-memory cache keyed by (universe, preds_mtime).
 _STRICT_WF_CACHE: dict[tuple[str, float], StrictWfResponse] = {}
 
+# Process-local lock that serializes paper-engine rebuilds when multiple
+# API requests hit the strict-WF endpoint concurrently. Without this,
+# os.remove() on analysis_live.sqlite would race with another request
+# still reading the same file → PermissionError → 500. The lock is OK
+# to be coarse-grained — rebuilds are infrequent (cache hit on most
+# polls) and the work itself is the bottleneck, not the lock contention.
+import threading as _threading
+_REPLAY_LOCK = _threading.Lock()
+
 
 def _replay_engine_for_strict(
     universe: str, preds_path: str, paper_path: str, commission: str
@@ -994,17 +1003,57 @@ def _replay_engine_for_strict(
     if n == 0:
         return None
     run_id = f"strict_wf_live_{universe.lower()}"
-    # Always rebuild — the calling layer caches by mtime so this is cheap on cache hit.
-    if os.path.exists(paper_path):
-        os.remove(paper_path)
-    cfg = StrategyConfig(
-        run_id=run_id,
-        universe=universe,
-        predictions_sqlite_path=preds_path,
-        paper_db_path=paper_path,
-        commission_model=commission,
-    )
-    backtest(cfg)
+
+    # Concurrency-safe rebuild. The previous implementation did
+    # ``os.remove(paper_path); backtest(...)`` which raced when two API
+    # requests hit the strict-WF endpoint at the same time (Windows file
+    # locks the sqlite while it's open elsewhere → PermissionError → 500).
+    #
+    # New strategy:
+    #   1. Hold a process-local lock so concurrent rebuilds serialize
+    #      inside this Python process.
+    #   2. Build into a temp path, then atomically replace paper_path
+    #      with ``os.replace`` (which works even if the target is open
+    #      for reading on Windows, unlike os.remove).
+    #   3. If the replace itself races against another process holding
+    #      the file, retry a few times before giving up.
+    with _REPLAY_LOCK:
+        tmp_path = f"{paper_path}.rebuild-{os.getpid()}.tmp"
+        # If a prior crash left a tmp around, clear it.
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        cfg = StrategyConfig(
+            run_id=run_id,
+            universe=universe,
+            predictions_sqlite_path=preds_path,
+            paper_db_path=tmp_path,
+            commission_model=commission,
+        )
+        backtest(cfg)
+        # Atomic swap. os.replace allows replacing an existing file even
+        # if it's open for reading on Windows in most cases. Retry on
+        # the rare PermissionError where the OS hasn't released the
+        # previous handle yet.
+        import time as _time
+        last_exc: Exception | None = None
+        for _attempt in range(5):
+            try:
+                os.replace(tmp_path, paper_path)
+                last_exc = None
+                break
+            except PermissionError as exc:
+                last_exc = exc
+                _time.sleep(0.2)
+        if last_exc is not None:
+            # Give up cleanly: leave the tmp file, return None.
+            log.warning(
+                f"strict-wf replay: could not atomically replace {paper_path} "
+                f"after 5 attempts ({last_exc!r}); leaving tmp file in place"
+            )
+            return None
     return run_id
 
 
