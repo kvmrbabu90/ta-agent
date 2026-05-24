@@ -430,6 +430,25 @@ def run_walkforward(
     # If you genuinely want a fresh run, delete the output directory
     # manually before launching:
     #     rm -rf data/processed/walkforward_10yr_strict
+    #
+    # Pre-startup safety backup: before opening the DB for any writes,
+    # snapshot the existing file with a timestamped name. Cheap insurance
+    # — copies a 100 MB file in ~1 second.
+    if os.path.exists(preds_path) and os.path.getsize(preds_path) > 50_000:
+        import shutil as _shutil
+        _ts = time.strftime("%Y%m%d_%H%M%S")
+        backup_dir = Path(preds_path).parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        safety_path = str(backup_dir / f"predictions_pre_startup_{_ts}.sqlite")
+        _shutil.copy2(preds_path, safety_path)
+        log.info(
+            f"walkforward: pre-startup safety backup → {safety_path} "
+            f"({os.path.getsize(safety_path)/1e6:.1f} MB)"
+        )
+        # Prune old pre-startup safety files: keep last 5.
+        startup_backups = sorted(backup_dir.glob("predictions_pre_startup_*.sqlite"))
+        for old in startup_backups[:-5]:
+            old.unlink(missing_ok=True)
     init_predictions_db(preds_path)
 
     log.info(
