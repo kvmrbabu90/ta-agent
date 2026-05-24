@@ -303,11 +303,43 @@ function SummaryTiles({ data }: { data: StrictWfResponse }) {
         tone={s.strategy_annualized_pct >= s.benchmark_annualized_pct ? 'pos' : 'neg'}
         subValue={annAfterTax}
       />
-      <Tile
-        label={ahead ? 'Strategy / Bench' : 'Trailing bench'}
-        value={`${s.strategy_multiple.toFixed(2)}×`}
-        tone={ahead ? 'pos' : 'neg'}
-      />
+      {(() => {
+        // Strategy / Bench tile as an after-tax ratio. Numerator =
+        // strategy multiple after 30% STCG; denominator = SPY multiple
+        // after 15% LTCG. Answers "for every dollar a B&H investor
+        // walks away with after-tax, how many does the strategy walk
+        // away with after-tax".
+        //
+        // Falls back to pre-tax ratio if after-tax values aren't
+        // populated yet (first year not complete) — gracefully avoids
+        // showing N/A for fresh runs.
+        const stratMult =
+          s.strategy_multiple_after_tax != null
+            ? s.strategy_multiple_after_tax
+            : 1 + s.strategy_cum_return_pct / 100;
+        const benchMult =
+          s.benchmark_cum_return_after_tax_pct != null
+            ? 1 + s.benchmark_cum_return_after_tax_pct / 100
+            : 1 + s.benchmark_cum_return_pct / 100;
+        const ratio = benchMult > 0 ? stratMult / benchMult : null;
+        const aheadAT = ratio != null && ratio >= 1;
+        const labelSuffix =
+          s.strategy_multiple_after_tax != null && s.benchmark_cum_return_after_tax_pct != null
+            ? ' (a/t)'
+            : '';
+        return (
+          <Tile
+            label={(aheadAT ? 'Strategy / Bench' : 'Trailing bench') + labelSuffix}
+            value={ratio != null ? `${ratio.toFixed(2)}×` : '—'}
+            tone={aheadAT ? 'pos' : 'neg'}
+            subValue={
+              labelSuffix
+                ? `pre-tax: ${(s.strategy_multiple / (1 + s.benchmark_cum_return_pct / 100)).toFixed(2)}×`
+                : undefined
+            }
+          />
+        );
+      })()}
     </div>
   );
 }
