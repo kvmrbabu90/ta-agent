@@ -1259,11 +1259,21 @@ def _strict_build_equity_curve(
     """Build the per-day equity-curve payload: pre-tax, post-tax, and
     benchmark (B&H, indexed to the strategy's starting capital).
 
-    Post-tax recipe:
-        - For each completed calendar year, tax_y = max(0, eoy_eq - soy_eq) * rate
-          where soy_eq/eoy_eq are pre-tax (paper-engine) equities.
-        - post_tax(t) = pre_tax(t) − sum(tax_y for completed years y < t.year).
-        - Losing years contribute zero. The in-progress year is never taxed.
+    Post-tax recipe (reduced-base compounding — matches what a real
+    investor experiences when taxes are paid out of the portfolio):
+
+        - Year 1 post-tax = pre-tax (no taxes yet; year not complete).
+        - End of completed year Y with positive year_return r_Y:
+              post_eq_end_of_Y = post_eq_start_of_Y * (1 + r_Y * (1 − rate))
+          where r_Y = (pre_eoy_Y / pre_soy_Y) − 1, i.e. the pre-tax
+          intra-year growth. Loss years pass through unchanged.
+        - Within year Y, intra-year scaling:
+              post_eq[t] = post_eq_start_of_Y * (pre_eq[t] / pre_eq_start_of_Y)
+
+        This means the post-tax curve compounds on a REDUCED capital
+        base after each tax payment, rather than tracking pre-tax minus
+        cumulative tax. The two methods diverge over multiple years;
+        reduced-base is the honest "what you actually have" view.
 
     Benchmark series:
         - Read close prices for ``bench_sym`` over [first_date, last_date].
@@ -1304,39 +1314,40 @@ def _strict_build_equity_curve(
             soy_eq[y] = float(eq)
         eoy_eq[y] = float(eq)
 
-    # Tax owed for each COMPLETED year (becomes effective on Jan 1 of y+1).
-    year_tax: dict[int, float] = {}
-    for y, first in soy_eq.items():
+    # Per-year reduced-base post-tax multiple. For each completed year:
+    #   yearly_post_factor = 1 + r * (1 - rate)   if r > 0 (gain → taxed)
+    #                      = 1 + r                if r <= 0 (loss → no tax)
+    # Compound these to get post_eq at the start of each year.
+    sorted_years = sorted(soy_eq.keys())
+    # post_eq_start_of_year[y] = post-tax equity at the first datapoint of year y.
+    # Year 1 starts at pre-tax starting capity (= pretax[0]); subsequent years are
+    # reduced by cumulative tax of completed prior years.
+    post_eq_start_of_year: dict[int, float] = {}
+    starting = float(rows[0][1])
+    cumul_multiple_post = 1.0  # running post-tax multiplier ($1 of starting → this much)
+    for i, y in enumerate(sorted_years):
+        # post-tax equity at start of year y = starting * cumul_multiple_post
+        post_eq_start_of_year[y] = starting * cumul_multiple_post
+        # If this year is complete, apply its yearly post-tax factor for the next year.
         if max_d >= _date(y, 12, 28):
-            gain = eoy_eq[y] - first
-            year_tax[y] = gain * rate if gain > 0 else 0.0
+            soy = soy_eq[y]
+            eoy = eoy_eq[y]
+            r = (eoy / soy - 1) if soy > 0 else 0
+            factor = (1 + r * (1 - rate)) if r > 0 else (1 + r)
+            cumul_multiple_post *= factor
 
-    # Walk rows; cumul_tax at date d = sum of taxes for all completed
-    # years strictly before d.year.
+    # Walk daily rows; post_eq[t] = post_eq_start_of_year[year(t)] *
+    # (pre_eq[t] / pre_eq_start_of_year[year(t)]).
     dates: list[str] = []
     pretax: list[float] = []
     posttax: list[float] = []
-    # Precompute the running cumul keyed by year for O(1) lookup.
-    sorted_completed = sorted(year_tax)
-    running = 0.0
-    cumul_by_starting_year: dict[int, float] = {}
-    for y in sorted_completed:
-        # Tax for year y takes effect at Jan 1 of year y+1.
-        cumul_by_starting_year[y + 1] = running + year_tax[y]
-        running += year_tax[y]
-    last_year_seen = -1
-    cur_cumul = 0.0
     for d_str, eq in rows:
         y = int(str(d_str)[:4])
-        if y != last_year_seen:
-            # Update cumul if we crossed into a new year that has prior-year tax accrued.
-            # Largest completed-year-boundary <= y.
-            candidates = [yy for yy in cumul_by_starting_year if yy <= y]
-            cur_cumul = max((cumul_by_starting_year[yy] for yy in candidates), default=0.0)
-            last_year_seen = y
+        intra_year_factor = (float(eq) / soy_eq[y]) if soy_eq[y] > 0 else 1.0
+        post_eq_today = post_eq_start_of_year[y] * intra_year_factor
         dates.append(str(d_str))
         pretax.append(round(float(eq), 4))
-        posttax.append(round(float(eq) - cur_cumul, 4))
+        posttax.append(round(post_eq_today, 4))
 
     # Benchmark equity — rescale close prices to start at pretax[0].
     bench_equity: list[float] = []
@@ -1742,49 +1753,81 @@ def get_strict_wf_status(
     # unchanged (no carryforward modeled at this level).
     _strict_apply_tax(universe, paper_path, run_id, years)
 
-    # Cumulative summary
-    strat_cum = 1.0
-    bench_cum = 1.0
-    for y in years:
-        strat_cum *= (1 + y.strategy_return_pct / 100)
-        if y.benchmark_return_pct is not None:
-            bench_cum *= (1 + y.benchmark_return_pct / 100)
     n_years = max(len(years), 1)
-    # After-tax cumulative — reuses the same per-year strategy_return_pct
-    # but with capital reduced by each completed year's tax. See
-    # _strict_cum_after_tax_multiple for the per-year factor.
-    max_d_at = _strict_max_trade_date(paper_path, run_id)
-    m_after_tax = _strict_cum_after_tax_multiple(universe, max_d_at, years)
-    # Benchmark cum after LTCG — one-shot liquidation at the window end.
-    # Applied only when bench_cum is positive (no tax on losses).
+
+    # Build the equity curve first so we can derive the cum summary from
+    # its endpoints. This guarantees the dashboard's summary tiles match
+    # the chart exactly — same end-to-end equity, same WF window for the
+    # benchmark, no "year compound vs end-to-end" drift, no "full
+    # calendar year SPY vs partial WF window" mismatch.
+    equity_curve = _strict_build_equity_curve(
+        universe, paper_path, run_id, duck, bench_sym
+    )
     bench_ltcg = _STRICT_WF_BENCH_LTCG.get(universe, 0.0)
+
+    # Strategy pre-tax cum = end-to-end equity ratio. Falls back to the
+    # old yearly-compound math if the equity curve is empty.
+    if equity_curve.equity_pre_tax and equity_curve.equity_pre_tax[0] > 0:
+        strat_cum = (
+            equity_curve.equity_pre_tax[-1] / equity_curve.equity_pre_tax[0]
+        )
+    else:
+        strat_cum = 1.0
+        for y in years:
+            strat_cum *= (1 + y.strategy_return_pct / 100)
+
+    # Strategy after-tax cum = end-to-end ratio of the reduced-base
+    # post-tax line. Hides itself (None) if no year has completed yet —
+    # without a completed year there's no tax to apply, and showing the
+    # same number as pre-tax is just noise.
+    has_completed_year = any(
+        y.strategy_return_after_tax_pct is not None for y in years
+    )
+    strat_after_tax_pct: float | None = None
+    strat_after_tax_multiple: float | None = None
+    strat_after_tax_annualized: float | None = None
+    if has_completed_year and equity_curve.equity_post_tax and \
+            equity_curve.equity_post_tax[0] > 0:
+        strat_after_tax_multiple = (
+            equity_curve.equity_post_tax[-1] / equity_curve.equity_post_tax[0]
+        )
+        strat_after_tax_pct = (strat_after_tax_multiple - 1) * 100
+        strat_after_tax_annualized = (
+            strat_after_tax_multiple ** (1 / n_years) - 1
+        ) * 100
+
+    # Benchmark cum = end-to-end ratio of bench_equity over the WF window.
+    # The benchmark series in equity_curve is already restricted to
+    # [first_date, last_date] of the WF — so this answers "what did SPY
+    # do over the same date span the strategy actually traded".
+    if equity_curve.benchmark_equity and equity_curve.benchmark_equity[0] > 0:
+        bench_cum = (
+            equity_curve.benchmark_equity[-1] / equity_curve.benchmark_equity[0]
+        )
+    else:
+        bench_cum = 1.0
     bench_cum_pct_pre = (bench_cum - 1) * 100
+    # SPY post-LTCG: one-shot liquidation at end of WF window. Same
+    # convention as the post-LTCG dot on the chart.
     bench_cum_pct_post: float | None = None
     if bench_ltcg > 0:
         if bench_cum_pct_pre > 0:
             bench_cum_pct_post = bench_cum_pct_pre * (1 - bench_ltcg)
         else:
             bench_cum_pct_post = bench_cum_pct_pre
+
     summary = StrictWfSummary(
         starting_capital=1000.0,
         strategy_cum_return_pct=(strat_cum - 1) * 100,
-        strategy_cum_return_after_tax_pct=(
-            (m_after_tax - 1) * 100 if m_after_tax is not None else None
-        ),
-        strategy_annualized_after_tax_pct=(
-            (m_after_tax ** (1 / n_years) - 1) * 100 if m_after_tax is not None else None
-        ),
-        strategy_multiple_after_tax=m_after_tax,
+        strategy_cum_return_after_tax_pct=strat_after_tax_pct,
+        strategy_annualized_after_tax_pct=strat_after_tax_annualized,
+        strategy_multiple_after_tax=strat_after_tax_multiple,
         benchmark_cum_return_pct=bench_cum_pct_pre,
         benchmark_cum_return_after_tax_pct=bench_cum_pct_post,
         strategy_annualized_pct=(strat_cum ** (1 / n_years) - 1) * 100,
         benchmark_annualized_pct=(bench_cum ** (1 / n_years) - 1) * 100,
         n_years=float(n_years),
         strategy_multiple=strat_cum,
-    )
-
-    equity_curve = _strict_build_equity_curve(
-        universe, paper_path, run_id, duck, bench_sym
     )
     monthly_excess = _strict_monthly_excess(paper_path, run_id, duck, bench_sym)
 
