@@ -97,7 +97,10 @@ export function PaperTradePage() {
   const { run_id: runId, currency } = mapping;
 
   const snapQ = usePaperSnapshot(runId, 365);
-  const tradesQ = usePaperTrades(runId, 100);
+  // Recent closes only — OPEN trades are noisy and don't carry realized
+  // P&L. Pull the last 100 close events (long_close, short_close,
+  // stop_close) so the user sees what's been booked recently.
+  const tradesQ = usePaperTrades(runId, 100, true);
 
   return (
     <div className="space-y-6">
@@ -462,7 +465,7 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
   return (
     <section className="space-y-3">
       <h2 className="text-base font-semibold text-gray-100">
-        Recent trades <span className="text-gray-500">({data.length})</span>
+        Recent closes <span className="text-gray-500">({data.length})</span>
       </h2>
       <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900/60">
         {loading ? (

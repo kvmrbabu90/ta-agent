@@ -14,9 +14,11 @@ export function fetchPaperSnapshot(
 export function fetchPaperTrades(
   runId = 'default',
   limit = 50,
+  closesOnly = false,
 ): Promise<PaperTradesResponse> {
   return apiGet<PaperTradesResponse>('/paper/trades', {
     run_id: runId,
     limit,
+    closes_only: closesOnly,
   });
 }

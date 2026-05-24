@@ -228,14 +228,31 @@ def snapshot(
 def trades(
     run_id: str = Query("default"),
     limit: int = Query(50, ge=1, le=1000),
+    closes_only: bool = Query(
+        False,
+        description="If true, only return closing trades (long_close, "
+        "short_close, stop_close). Skips OPEN trades. Useful for a 'recent "
+        "exits' view that emphasizes realized P&L.",
+    ),
 ) -> PaperTradesResponse:
     conn = _conn()
     try:
-        rows = conn.execute(
-            "SELECT trade_date, symbol, side, qty, fill_price, cash_delta, realized_pnl "
-            "FROM paper_trades WHERE run_id = ? ORDER BY trade_date DESC, symbol LIMIT ?",
-            (run_id, limit),
-        ).fetchall()
+        # Filter ON DB side for efficiency — applying after LIMIT would
+        # under-count the result set.
+        if closes_only:
+            rows = conn.execute(
+                "SELECT trade_date, symbol, side, qty, fill_price, cash_delta, realized_pnl "
+                "FROM paper_trades WHERE run_id = ? "
+                "AND side IN ('long_close', 'short_close', 'stop_close') "
+                "ORDER BY trade_date DESC, symbol LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT trade_date, symbol, side, qty, fill_price, cash_delta, realized_pnl "
+                "FROM paper_trades WHERE run_id = ? ORDER BY trade_date DESC, symbol LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
         trades_out = [
             PaperTrade(
                 trade_date=date.fromisoformat(r[0]),

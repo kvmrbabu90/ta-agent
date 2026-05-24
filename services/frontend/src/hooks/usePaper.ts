@@ -9,10 +9,10 @@ export function usePaperSnapshot(runId = 'default', lookbackDays = 60) {
   });
 }
 
-export function usePaperTrades(runId = 'default', limit = 50) {
+export function usePaperTrades(runId = 'default', limit = 50, closesOnly = false) {
   return useQuery({
-    queryKey: ['paper-trades', runId, limit],
-    queryFn: () => fetchPaperTrades(runId, limit),
+    queryKey: ['paper-trades', runId, limit, closesOnly],
+    queryFn: () => fetchPaperTrades(runId, limit, closesOnly),
     staleTime: 30_000,
   });
 }
