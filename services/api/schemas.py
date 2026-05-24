@@ -232,10 +232,43 @@ class PaperTrade(_BaseResponse):
     realized_pnl: float | None = None
 
 
+class PaperBenchmarkPoint(_BaseResponse):
+    """SPY B&H equity rebased to the paper starting capital. One row per
+    close-of-day snapshot in the paper equity_curve."""
+    trade_date: date
+    equity: float
+
+
+class PaperPostTaxPoint(_BaseResponse):
+    """Strategy equity AFTER 30% STCG (reduced-base compounding).
+    Same dates as paper equity_curve close snapshots.
+
+    Method: for each completed calendar year y, the year's gain on the
+    PRE-TAX equity is taxed at 30%, and that tax is deducted from
+    capital at the start of year y+1. Within-year intra-year scaling
+    follows the pre-tax curve proportionally. Matches the convention
+    used on the Live WF page.
+
+    IBKR Lite commissions are ALREADY in the pre-tax curve (paper engine
+    uses commission_model='ibkr_lite' so SEC fee on sells is subtracted
+    from cash). So "tax-adjusted" here means *additional* 30% tax on
+    top of the existing fee deductions.
+    """
+    trade_date: date
+    equity: float
+
+
 class PaperSnapshotResponse(_BaseResponse):
     run: PaperRunSummary
     equity_curve: list[PaperEquityPoint] = Field(default_factory=list)
     positions: list[PaperPosition] = Field(default_factory=list)
+    # SPY benchmark — same date span as equity_curve, rebased to the
+    # paper run's starting capital.
+    benchmark_curve: list[PaperBenchmarkPoint] = Field(default_factory=list)
+    benchmark_symbol: str | None = None
+    # Strategy AFTER 30% STCG (IBKR Lite fees already in equity_curve).
+    post_tax_curve: list[PaperPostTaxPoint] = Field(default_factory=list)
+    strategy_tax_rate: float = 0.30
 
 
 class PaperTradesResponse(_BaseResponse):

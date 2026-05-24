@@ -138,7 +138,15 @@ export function PaperTradePage() {
 function PaperRunView({
   data, trades, tradesLoading, currency,
 }: {
-  data: { run: PaperRunSummary; equity_curve: PaperEquityPoint[]; positions: PaperPosition[] };
+  data: {
+    run: PaperRunSummary;
+    equity_curve: PaperEquityPoint[];
+    positions: PaperPosition[];
+    benchmark_curve?: { trade_date: string; equity: number }[];
+    benchmark_symbol?: string | null;
+    post_tax_curve?: { trade_date: string; equity: number }[];
+    strategy_tax_rate?: number;
+  };
   trades: PaperTrade[];
   tradesLoading: boolean;
   currency: Currency;
@@ -176,10 +184,39 @@ function PaperRunView({
       />
 
       <section className="space-y-3">
-        <h2 className="text-base font-semibold text-gray-100">Equity curve</h2>
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-base font-semibold text-gray-100">Equity curve</h2>
+          <div className="text-[11px] text-gray-500">
+            <span className="text-emerald-400">strategy</span>
+            {(data.post_tax_curve?.length ?? 0) > 0 ? (
+              <>
+                {' · '}
+                <span className="text-emerald-400/70" title="30% short-term capital gains applied at end of each completed calendar year, reduced-base compounding">
+                  after tax
+                </span>
+              </>
+            ) : null}
+            {(data.benchmark_curve?.length ?? 0) > 0 ? (
+              <>
+                {' · '}
+                <span className="text-sky-400" title="SPY buy-and-hold rebased to the paper run's starting capital">
+                  {data.benchmark_symbol ?? 'SPY'} B&amp;H
+                </span>
+              </>
+            ) : null}
+            <span className="text-gray-500"> · IBKR Lite fees already in strategy</span>
+          </div>
+        </div>
         <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
           {equity_curve.length > 0 ? (
-            <EquityChart points={equity_curve} starting={run.starting_cash} currency={currency} />
+            <EquityChart
+              points={equity_curve}
+              benchPoints={data.benchmark_curve}
+              postTaxPoints={data.post_tax_curve}
+              benchSymbol={data.benchmark_symbol}
+              starting={run.starting_cash}
+              currency={currency}
+            />
           ) : (
             <EmptyState
               title="No equity history yet"
@@ -317,22 +354,39 @@ function SnapshotCard({ icon, time, label, point, starting, currency }: {
 // Equity chart
 // ---------------------------------------------------------------------------
 
-function EquityChart({ points, starting, currency }: {
+function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting, currency }: {
   points: PaperEquityPoint[];
+  benchPoints?: { trade_date: string; equity: number }[];
+  postTaxPoints?: { trade_date: string; equity: number }[];
+  benchSymbol?: string | null;
   starting: number;
   currency: Currency;
 }) {
-  const series = useMemo(
-    () => points
-      .filter((p) => p.snapshot_kind === 'close_5pm_ct')
-      .map((p) => ({
-        date: p.trade_date,
-        Equity: p.equity,
-      })),
-    [points],
-  );
+  const series = useMemo(() => {
+    const closeOnly = points.filter((p) => p.snapshot_kind === 'close_5pm_ct');
+    const benchByDate = new Map((benchPoints ?? []).map((b) => [b.trade_date, b.equity]));
+    const postByDate = new Map((postTaxPoints ?? []).map((b) => [b.trade_date, b.equity]));
+    return closeOnly.map((p) => ({
+      date: p.trade_date,
+      Strategy: p.equity,
+      Bench: benchByDate.get(p.trade_date) ?? null,
+      'After tax': postByDate.get(p.trade_date) ?? null,
+    }));
+  }, [points, benchPoints, postTaxPoints]);
   if (series.length === 0) return null;
   const sym = currencySymbol(currency);
+  // Decide whether to render bench / post-tax. Bench is opt-in; post-tax
+  // line only meaningfully differs from Strategy once a calendar year
+  // has completed in the run — until then it tracks the pre-tax line.
+  const hasBench = (benchPoints?.length ?? 0) > 0;
+  const hasPostTax =
+    (postTaxPoints?.length ?? 0) > 0 &&
+    postTaxPoints!.some((p, i) => {
+      const matchIdx = series.findIndex((s) => s.date === p.trade_date);
+      if (matchIdx < 0) return false;
+      const preTax = series[matchIdx].Strategy;
+      return Math.abs(p.equity - preTax) > 0.01;
+    });
   return (
     <div className="h-[280px]">
       <ResponsiveContainer width="100%" height="100%">
@@ -354,14 +408,44 @@ function EquityChart({ points, starting, currency }: {
             strokeDasharray="3 3"
             label={{ value: `start ${moneyFmt(starting, currency, 0)}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
           />
+          {/* Strategy pre-tax (IBKR Lite fees already deducted by the
+              paper engine) — primary solid green line. */}
           <Line
             type="monotone"
-            dataKey="Equity"
+            dataKey="Strategy"
             stroke="#34d399"
             strokeWidth={2.2}
             dot={false}
             isAnimationActive={false}
           />
+          {/* Strategy after 30% STCG — dashed dim green. Only shows
+              divergence after a calendar year completes. */}
+          {hasPostTax && (
+            <Line
+              type="monotone"
+              dataKey="After tax"
+              stroke="#34d399"
+              strokeOpacity={0.55}
+              strokeDasharray="4 3"
+              strokeWidth={1.5}
+              dot={false}
+              isAnimationActive={false}
+              connectNulls
+            />
+          )}
+          {/* SPY B&H — sky blue, rebased to starting capital. */}
+          {hasBench && (
+            <Line
+              type="monotone"
+              dataKey="Bench"
+              name={benchSymbol ?? 'SPY'}
+              stroke="#38bdf8"
+              strokeWidth={1.5}
+              dot={false}
+              isAnimationActive={false}
+              connectNulls
+            />
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>

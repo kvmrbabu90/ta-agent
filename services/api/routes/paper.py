@@ -7,18 +7,30 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+import duckdb
+
+from services.api.deps import get_duckdb_conn
 
 from packages.common.config import settings
 from packages.paper_trading import StrategyConfig, backtest, init_paper_db
 from services.api.schemas import (
+    PaperBenchmarkPoint,
     PaperEquityPoint,
     PaperPosition,
+    PaperPostTaxPoint,
     PaperRunSummary,
     PaperSnapshotResponse,
     PaperTrade,
     PaperTradesResponse,
 )
+
+# 30% blanket short-term capital-gains rate applied to the strategy's
+# realized gain per calendar year. SPY B&H benchmark — no LTCG applied
+# on the curve (the benchmark line is pre-tax; an LTCG haircut would
+# only apply at sale, not on a continuous chart).
+_PAPER_STRATEGY_STCG = 0.30
+_PAPER_BENCHMARK_SYMBOL = "SPY"
 
 router = APIRouter(prefix="/paper", tags=["paper_trading"])
 
@@ -38,6 +50,7 @@ def _conn() -> sqlite3.Connection:
 def snapshot(
     run_id: str = Query("default"),
     lookback_days: int = Query(60, ge=1, le=2000),
+    duck: duckdb.DuckDBPyConnection = Depends(get_duckdb_conn),
 ) -> PaperSnapshotResponse:
     conn = _conn()
     try:
@@ -96,6 +109,88 @@ def snapshot(
             for r in equity_rows
             if date.fromisoformat(r[0]).toordinal() >= cutoff
         ]
+
+        # --- Benchmark + post-tax overlays ----------------------------
+        # Both align to the close_5pm_ct points of equity_curve (one
+        # row per trading day at close). Open-snapshot rows are skipped
+        # — the chart only needs the daily resolution.
+        close_points = [p for p in equity_curve if p.snapshot_kind == "close_5pm_ct"]
+
+        # SPY benchmark, rebased to starting capital of the paper run.
+        # Fetch SPY closes over the equity_curve span from DuckDB.
+        benchmark_curve: list[PaperBenchmarkPoint] = []
+        if close_points:
+            span_start = close_points[0].trade_date
+            span_end = close_points[-1].trade_date
+            bench_rows = duck.execute(
+                "SELECT bar_date, close FROM ohlcv_daily "
+                "WHERE symbol = ? AND bar_date >= ? AND bar_date <= ? "
+                "ORDER BY bar_date",
+                [_PAPER_BENCHMARK_SYMBOL, span_start, span_end],
+            ).fetchall()
+            if bench_rows:
+                bclose: dict[str, float] = {str(d): float(c) for d, c in bench_rows}
+                # First available bench close on/after span_start is the
+                # normalization anchor.
+                first_close = float(bench_rows[0][1])
+                # Rebase to starting_cash of the paper run.
+                scale = (run.starting_cash / first_close) if first_close > 0 else 0.0
+                last_close = first_close
+                for p in close_points:
+                    d_str = p.trade_date.isoformat()
+                    if d_str in bclose:
+                        last_close = bclose[d_str]
+                    benchmark_curve.append(
+                        PaperBenchmarkPoint(
+                            trade_date=p.trade_date,
+                            equity=round(last_close * scale, 4),
+                        )
+                    )
+
+        # Post-tax strategy curve (30% STCG, reduced-base compounding
+        # year by year). IBKR Lite fees are already in the pre-tax
+        # equity (paper engine deducts them).
+        post_tax_curve: list[PaperPostTaxPoint] = []
+        if close_points:
+            # Per-year start/end equity from the pre-tax close series.
+            soy_eq: dict[int, float] = {}
+            eoy_eq: dict[int, float] = {}
+            for p in close_points:
+                y = p.trade_date.year
+                if y not in soy_eq:
+                    soy_eq[y] = p.equity
+                eoy_eq[y] = p.equity
+            max_d = close_points[-1].trade_date
+            # Per-year multiplicative factor used to scale equity AT
+            # START of each year. Anchor to the FIRST actual close so
+            # the post-tax line starts at the same point as the strategy
+            # line (matches the chart visually — divergence appears only
+            # when a calendar year completes and the tax bite kicks in).
+            sorted_years = sorted(soy_eq.keys())
+            post_eq_start_of_year: dict[int, float] = {}
+            starting_post = soy_eq[sorted_years[0]]
+            cumul_multiple = 1.0
+            for y in sorted_years:
+                post_eq_start_of_year[y] = starting_post * cumul_multiple
+                if max_d >= date(y, 12, 28):
+                    # Year fully elapsed → apply STCG to the gain.
+                    r = (eoy_eq[y] / soy_eq[y] - 1) if soy_eq[y] > 0 else 0
+                    factor = (
+                        1 + r * (1 - _PAPER_STRATEGY_STCG) if r > 0 else 1 + r
+                    )
+                    cumul_multiple *= factor
+            # Walk close_points, scale intra-year by pre-tax growth.
+            for p in close_points:
+                y = p.trade_date.year
+                intra = (
+                    (p.equity / soy_eq[y]) if soy_eq[y] > 0 else 1.0
+                )
+                post_tax_curve.append(
+                    PaperPostTaxPoint(
+                        trade_date=p.trade_date,
+                        equity=round(post_eq_start_of_year[y] * intra, 4),
+                    )
+                )
 
         # Latest positions (most recent trade_date). With overlapping-portfolio
         # construction, the same symbol may exist across multiple lots — aggregate
@@ -218,7 +313,13 @@ def snapshot(
                 )
 
         return PaperSnapshotResponse(
-            run=run, equity_curve=equity_curve, positions=positions
+            run=run,
+            equity_curve=equity_curve,
+            positions=positions,
+            benchmark_curve=benchmark_curve,
+            benchmark_symbol=_PAPER_BENCHMARK_SYMBOL if benchmark_curve else None,
+            post_tax_curve=post_tax_curve,
+            strategy_tax_rate=_PAPER_STRATEGY_STCG,
         )
     finally:
         conn.close()

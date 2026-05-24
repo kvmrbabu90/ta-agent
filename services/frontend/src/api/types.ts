@@ -329,10 +329,24 @@ export interface PaperTrade {
   realized_pnl: number | null;
 }
 
+export interface PaperBenchmarkPoint {
+  trade_date: string;
+  equity: number;
+}
+
+export interface PaperPostTaxPoint {
+  trade_date: string;
+  equity: number;
+}
+
 export interface PaperSnapshotResponse {
   run: PaperRunSummary;
   equity_curve: PaperEquityPoint[];
   positions: PaperPosition[];
+  benchmark_curve: PaperBenchmarkPoint[];
+  benchmark_symbol: string | null;
+  post_tax_curve: PaperPostTaxPoint[];
+  strategy_tax_rate: number;
 }
 
 export interface PaperTradesResponse {
