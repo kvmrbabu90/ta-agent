@@ -6,59 +6,137 @@ Write a markdown analysis covering the **most recent completed retrain** AND **c
 
 ## Steps
 
-1. **Pull latest dashboard data** from the strict-WF endpoint:
+1. **Pull latest dashboard data** (cum tiles + years + monthly_excess):
    ```bash
-   curl -s http://localhost:8000/performance/strict-wf/SP500 > /tmp/wf_status.json
+   curl -s http://localhost:8000/performance/strict-wf/SP500 -o C:/Users/konda/AppData/Local/Temp/wf_status.json
    ```
 
-2. **Pull the most recent month's cell drill-down** (find the latest year/month from `years` and `monthly_excess`, then call the month-detail endpoint). The cell modal is the **source of truth** for per-month numbers — do NOT compute month return from cum delta (those use different math and don't match).
+2. **Pull the cell drill-down** for the most recent COMPLETED month (find the latest year/month from `years`'s last row or `monthly_excess`'s last cell). **The cell modal is the source of truth for per-month numbers** — never compute month return from cum-tile delta (different math, doesn't match the dashboard).
    ```bash
-   curl -s "http://localhost:8000/performance/strict-wf/SP500/month/{YEAR}/{MONTH}" > /tmp/wf_month.json
+   curl -s "http://localhost:8000/performance/strict-wf/SP500/month/{YEAR}/{MONTH}" \
+     -o C:/Users/konda/AppData/Local/Temp/wf_month.json
    ```
 
-3. **Write a markdown analysis** with these sections (keep it tight — this renders on the dashboard, not the chat):
+3. **Write the markdown** following the layout below. Use the cleaner formatting structure with horizontal-rule separators between major sections, tables for structured data (lots of repeated columns), and bullets for short list-like content.
 
-   ### Header
-   - "**Month: {Month YYYY}**" — the latest month covered
-   - One-line headline: strategy %, after-tax %, SPY %, excess (a/t), Sharpe, MaxDD
+4. **Save the markdown** atomically:
+   - Write to `data/processed/walkforward_10yr_strict/latest_analysis.md.tmp`
+   - Rename to `latest_analysis.md`
+   - Include YAML frontmatter (see template below)
 
-   ### What happened in {Month}
-   - 2-4 short bullets covering the market context (macro, sector rotation, single-stock catalysts) for that month
-   - Pull from your domain knowledge of US equity history for the date — don't invent numbers, but characterize the regime (vol shock / melt-up / V-bottom / mega-cap-led / sector rotation / etc.)
+5. **Reply briefly** in chat: "Analysis updated through {Month YYYY}. Visible at the bottom of the Live WF tab."
 
-   ### Strategy positioning
-   - Top 3-5 holdings during the month (from the cell drill-down `top_holdings` field) with the avg_weight_pct
-   - One sentence on what those names suggest about the strategy's positioning (which sectors, growth vs defensive, single-name concentration)
+## Layout template
 
-   ### Best and worst days
-   - 1-2 best/worst days from the cell drill-down with brief context
+```markdown
+---
+universe: SP500
+covers_through: "YYYY-MM-DD"          # last_retrain_date from progress
+retrain_count: N                       # retrains_complete
+written_at: "YYYY-MM-DDTHH:MM:SSZ"     # current UTC
+---
 
-   ### Cumulative through retrain N
-   - Strategy cum / after-tax / SPY / after-LTCG / multiple
-   - Excess (a/t) vs SPY
-   - Sharpe (running) / MaxDD (all-time)
-   - Number of complete years locked in + year-by-year mini-table
+# {Month YYYY} — {1-line characterization}
 
-   ### Outlook for next month
-   - Historical SPY return for the next month
-   - 2-3 sentences on what to watch (regime continuation? stress test? earnings season?)
+### Headline
 
-4. **Save the markdown** to `data/processed/walkforward_10yr_strict/latest_analysis.md`. Atomic write: stage to `.tmp`, then rename. Include a YAML frontmatter with:
-   ```yaml
-   ---
-   universe: SP500
-   covers_through: "YYYY-MM-DD"  # last_retrain_date
-   retrain_count: N
-   written_at: "ISO-8601 UTC"
-   ---
-   ```
+- **Strategy: ±X.XX%** · After-tax: ±X.XX%
+- **SPY: ±X.XX%** · Excess (a/t): **±X.XX%**
+- Sharpe: ±X.XX · MaxDD: X.X% · Vol (annualized): X.X%
 
-5. **Reply briefly** in chat to confirm: "Analysis updated through {Month YYYY}. Visible at the bottom of the Live WF tab."
+---
+
+## What happened in {Month}
+
+- **{Theme}**: 1-2 sentence description. (Macro context, regime, vol level.)
+- **{Sector/leader}**: which sectors led / lagged, and why it matters for an
+  equal-weight long-only model.
+- **{Single-stock or rate driver}**: anything important about specific
+  drivers (Fed, earnings, geopolitics).
+- **{One more if needed}**.
+
+(2-4 bullets total. Pull from your domain knowledge of US equity history. Don't invent specific numbers you can't verify; characterize regimes.)
+
+---
+
+## Strategy positioning
+
+Top holdings during {Month} (from the cell drill-down `top_holdings`):
+
+| Symbol | Days held | Avg weight | Sector |
+|---|---|---|---|
+| **SYM** | N/total | X.X% | Sector — full company name |
+
+(Top 5 holdings. Include the sector inline so the reader sees the bucket at a glance.)
+
+**Diagnosis**: 1-2 sentences interpreting the holdings — which factor bucket, which sectors, what it implies about the strategy's lean.
+
+---
+
+## Best and worst days
+
+**Best (by excess):**
+
+- **{Date}**: strategy ±X.XX% / SPY ±X.XX% → +X.XX% excess
+- (3 from cell drill-down's best_days)
+
+**Worst (by excess):**
+
+- **{Date}**: strategy ±X.XX% / SPY ±X.XX% → −X.XX% excess
+- (3 from cell drill-down's worst_days)
+
+**Pattern**: 1-2 sentence interpretation — does the strategy protect on down days, capture on up days, etc.
+
+---
+
+## Cumulative through retrain N
+
+- **Strategy pre-tax: +X.XX%** · after-tax: **+X.XX%** · multiple **X.XX×**
+- **SPY pre-tax: +X.XX%** · after-LTCG: +X.XX%
+- **Excess (a/t): +X.XX%** vs SPY post-LTCG
+- Running Sharpe: **~+X.XX** · All-time MaxDD: **X.X%** ({when})
+
+### Years locked in (N)
+
+| Year | Strategy | After-tax | SPY | Sharpe | MaxDD |
+|---|---|---|---|---|---|
+| YYYY | +X.XX% | +X.XX% | +X.XX% | X.XX | X.X% |
+
+(Compact per-year table. Skip if no year is complete yet.)
+
+---
+
+## Outlook for next month — {Month YYYY}
+
+**Historical SPY: ±X.X%** ({brief characterization — "red month with Greek crisis", "calm uptrend", "vol shock", etc.})
+
+What's coming (2-3 bullets):
+
+- **{Catalyst 1}**: brief description of macro event / earnings / etc.
+- **{Sector dynamics}**: what's expected to lead/lag.
+- **{Relevance to strategy}**: how this regime aligns or misaligns with the strategy's edges.
+
+**Central case**: −X% to +X% excess. (1-2 sentences justifying with reasoning.)
+
+**Bear case**: ±X% to ±X% if {specific failure mode}.
+
+**Bull case**: ±X% to ±X% if {specific success mode}.
+
+**Key watches:**
+
+- Does MaxDD break above X%?
+- Sharpe trajectory — running +X.XX for {year}. Below +X would signal {what}.
+
+_Generated by `/wf-analysis` at {timestamp}._
+```
 
 ## Constraints
 
-- Keep the analysis **under ~400 words** of body text (fits in a dashboard card without scroll-of-doom)
-- Do NOT compute month returns from cum-tile deltas — always use the cell drill-down endpoint's numbers, which use calendar-month convention matching the heatmap
-- Skip the in-flight retrain (use the most recent COMPLETED month)
-- Use plain markdown — no embedded React, no fancy components. Just headers, bullets, **bold**, and tables
-- Include footer line: "_Generated by /wf-analysis at {timestamp}._"
+- Use `---` horizontal rules between major sections (renders as a visible divider)
+- Use **markdown tables** (with `| col | col |` syntax) for holdings + years
+- Use **bullet lists** (with `-`) for what-happened, best/worst days, outlook items
+- Bold the key numerical lines so they pop visually
+- Total length: aim for ~500-600 words — readable in one glance without scrolling-of-doom
+- ALWAYS source per-month numbers from the cell drill-down endpoint (NOT cum-tile deltas)
+- Skip in-flight retrains (only commentary on COMPLETED months)
+- Footer line at end: `_Generated by /wf-analysis at YYYY-MM-DD HH:MM UTC._`

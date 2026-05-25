@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { useEffect, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useStrictWf, useStrictWfAnalysis, useStrictWfMonth } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
@@ -825,12 +826,11 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
 
 function AnalysisPanel({ universe }: { universe: string }) {
   const { data, isLoading } = useStrictWfAnalysis(universe);
-  // If no analysis has been written yet, show a hint pointing at /wf-analysis.
   const hasContent = !!data?.markdown;
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
-      <div className="mb-3 flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-200">Analysis</h3>
+    <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-5">
+      <div className="mb-4 flex items-baseline justify-between gap-2 border-b border-gray-800 pb-3">
+        <h3 className="text-lg font-semibold text-gray-100">Analysis</h3>
         <div className="text-[11px] text-gray-500">
           {hasContent && data?.covers_through ? (
             <>
@@ -847,21 +847,78 @@ function AnalysisPanel({ universe }: { universe: string }) {
       {isLoading ? (
         <div className="text-xs text-gray-500">Loading…</div>
       ) : hasContent ? (
-        <div className="prose prose-invert prose-sm max-w-none text-gray-300
-          prose-headings:text-gray-100 prose-headings:mt-3 prose-headings:mb-1.5
-          prose-h2:text-sm prose-h2:font-semibold
-          prose-h3:text-xs prose-h3:font-semibold prose-h3:uppercase prose-h3:tracking-wider prose-h3:text-gray-400
-          prose-p:text-sm prose-p:my-1.5
-          prose-strong:text-gray-100
-          prose-ul:my-1.5 prose-li:my-0.5 prose-li:text-sm
-          prose-table:text-xs prose-th:border-gray-700 prose-td:border-gray-800
-          prose-code:rounded prose-code:bg-gray-800 prose-code:px-1 prose-code:py-0.5 prose-code:text-gray-300 prose-code:before:content-none prose-code:after:content-none">
-          <ReactMarkdown>{data.markdown!}</ReactMarkdown>
+        // All styling done via component overrides — no Tailwind prose
+        // plugin needed. Each markdown node gets explicit dark-theme classes
+        // tuned for the dashboard's monospace-numeric aesthetic.
+        <div className="text-sm leading-relaxed text-gray-300">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              h1: ({ children }) => (
+                <h2 className="mt-2 mb-3 text-xl font-bold text-gray-100">{children}</h2>
+              ),
+              h2: ({ children }) => (
+                <h3 className="mt-5 mb-2 text-lg font-bold text-emerald-300">{children}</h3>
+              ),
+              h3: ({ children }) => (
+                <h4 className="mt-4 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{children}</h4>
+              ),
+              h4: ({ children }) => (
+                <h5 className="mt-3 mb-1 text-xs font-semibold uppercase tracking-wider text-gray-500">{children}</h5>
+              ),
+              p: ({ children }) => (
+                <p className="my-2 text-sm leading-relaxed text-gray-300">{children}</p>
+              ),
+              ul: ({ children }) => (
+                <ul className="my-2 ml-5 list-disc space-y-1 marker:text-gray-600">{children}</ul>
+              ),
+              ol: ({ children }) => (
+                <ol className="my-2 ml-5 list-decimal space-y-1 marker:text-gray-600">{children}</ol>
+              ),
+              li: ({ children }) => (
+                <li className="text-sm leading-relaxed text-gray-300">{children}</li>
+              ),
+              strong: ({ children }) => (
+                <strong className="font-semibold text-gray-100">{children}</strong>
+              ),
+              em: ({ children }) => (
+                <em className="italic text-gray-400">{children}</em>
+              ),
+              code: ({ children }) => (
+                <code className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-[12px] text-emerald-300">{children}</code>
+              ),
+              blockquote: ({ children }) => (
+                <blockquote className="my-3 border-l-2 border-emerald-500/40 pl-4 italic text-gray-400">{children}</blockquote>
+              ),
+              hr: () => <hr className="my-4 border-gray-800" />,
+              // Tables — render with explicit borders and tighter spacing.
+              table: ({ children }) => (
+                <div className="my-3 overflow-x-auto rounded border border-gray-800">
+                  <table className="w-full border-collapse text-xs">{children}</table>
+                </div>
+              ),
+              thead: ({ children }) => (
+                <thead className="bg-gray-900/80 text-[10px] uppercase tracking-wider text-gray-400">{children}</thead>
+              ),
+              tbody: ({ children }) => (
+                <tbody className="divide-y divide-gray-800">{children}</tbody>
+              ),
+              tr: ({ children }) => <tr>{children}</tr>,
+              th: ({ children }) => (
+                <th className="px-3 py-2 text-left font-medium">{children}</th>
+              ),
+              td: ({ children }) => (
+                <td className="px-3 py-1.5 font-mono text-gray-300">{children}</td>
+              ),
+            }}
+          >
+            {data.markdown!}
+          </ReactMarkdown>
         </div>
       ) : (
-        <div className="text-xs text-gray-500">
+        <div className="text-sm text-gray-500">
           The dashboard analysis card hasn't been generated yet. From this chat,
-          type <code className="rounded bg-gray-800 px-1 py-0.5 font-mono text-gray-300">/wf-analysis</code>
+          type <code className="rounded bg-gray-800 px-1 py-0.5 font-mono text-emerald-300">/wf-analysis</code>
           {' '}to publish a fresh write-up here.
         </div>
       )}
