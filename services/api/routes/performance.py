@@ -17,6 +17,7 @@ from services.api.deps import get_duckdb_conn, get_sqlite_conn
 from services.api.schemas import (
     ModelInfoResponse,
     PerformanceResponse,
+    StrictWfAnalysisResponse,
     StrictWfMonthDetail,
     StrictWfResponse,
     WalkforwardResponse,
@@ -57,6 +58,85 @@ def strict_wf(
         # if a stale client (or someone curl-poking) requests a universe
         # we no longer support.
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get(
+    "/strict-wf/{universe}/analysis",
+    response_model=StrictWfAnalysisResponse,
+)
+def strict_wf_analysis(universe: str) -> StrictWfAnalysisResponse:
+    """Return the latest published WF analysis markdown for ``universe``.
+
+    Written by the /wf-analysis slash command, stored in
+    data/processed/walkforward_10yr_strict/latest_analysis.md. Reads with
+    a tiny YAML-frontmatter parse so the front-matter metadata (covers
+    through, retrain count, written-at timestamp) is available to the
+    UI separately from the body markdown.
+    """
+    import os
+    from fastapi import HTTPException
+
+    # Mapping universe → analysis path. Hardcoded for now since SP500 is
+    # the only live strict-WF.
+    paths = {
+        "SP500": "data/processed/walkforward_10yr_strict/latest_analysis.md",
+    }
+    p = paths.get(universe)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"no analysis path for {universe!r}")
+    if not os.path.exists(p):
+        # File hasn't been written yet — return empty payload so the UI
+        # can render a placeholder.
+        return StrictWfAnalysisResponse()
+    try:
+        with open(p, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return StrictWfAnalysisResponse()
+
+    # Tiny inline YAML-frontmatter parse. Expected shape:
+    #   ---
+    #   universe: SP500
+    #   covers_through: "YYYY-MM-DD"
+    #   retrain_count: N
+    #   written_at: "ISO-8601"
+    #   ---
+    #   ...body...
+    covers_through: str | None = None
+    retrain_count: int | None = None
+    written_at: str | None = None
+    body = content
+    if content.startswith("---"):
+        try:
+            end = content.index("\n---", 3)
+            front = content[3:end].strip()
+            body = content[end + 4 :].lstrip("\n")
+            for line in front.splitlines():
+                line = line.strip()
+                if ":" not in line:
+                    continue
+                key, val = line.split(":", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key == "covers_through":
+                    covers_through = val
+                elif key == "retrain_count":
+                    try:
+                        retrain_count = int(val)
+                    except ValueError:
+                        pass
+                elif key == "written_at":
+                    written_at = val
+        except ValueError:
+            # No closing --- found; treat the whole thing as body.
+            pass
+
+    return StrictWfAnalysisResponse(
+        markdown=body,
+        covers_through=covers_through,
+        retrain_count=retrain_count,
+        written_at=written_at,
+    )
 
 
 @router.get(

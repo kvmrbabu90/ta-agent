@@ -11,7 +11,8 @@ import {
   YAxis,
 } from 'recharts';
 import { useEffect, useState, type ReactNode } from 'react';
-import { useStrictWf, useStrictWfMonth } from '@/hooks/usePerformance';
+import ReactMarkdown from 'react-markdown';
+import { useStrictWf, useStrictWfAnalysis, useStrictWfMonth } from '@/hooks/usePerformance';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
@@ -120,6 +121,7 @@ function UniverseSection({
             onCellClick={(c) => setSelectedCell({ year: c.year, month: c.month })}
           />
           <YearTable years={data.years} benchKey={data.benchmark_symbol} />
+          <AnalysisPanel universe={data.universe} />
           {selectedCell ? (
             <MonthDetailModal
               universe={data.universe}
@@ -817,6 +819,52 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function AnalysisPanel({ universe }: { universe: string }) {
+  const { data, isLoading } = useStrictWfAnalysis(universe);
+  // If no analysis has been written yet, show a hint pointing at /wf-analysis.
+  const hasContent = !!data?.markdown;
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-gray-200">Analysis</h3>
+        <div className="text-[11px] text-gray-500">
+          {hasContent && data?.covers_through ? (
+            <>
+              covers through <span className="font-mono text-gray-300">{data.covers_through}</span>
+              {data.written_at ? (
+                <> · written <span className="font-mono text-gray-300">{data.written_at.slice(0, 16).replace('T', ' ')}</span></>
+              ) : null}
+            </>
+          ) : (
+            <span className="italic">no analysis yet — run <code className="rounded bg-gray-800 px-1 py-0.5 font-mono text-gray-300">/wf-analysis</code> in chat</span>
+          )}
+        </div>
+      </div>
+      {isLoading ? (
+        <div className="text-xs text-gray-500">Loading…</div>
+      ) : hasContent ? (
+        <div className="prose prose-invert prose-sm max-w-none text-gray-300
+          prose-headings:text-gray-100 prose-headings:mt-3 prose-headings:mb-1.5
+          prose-h2:text-sm prose-h2:font-semibold
+          prose-h3:text-xs prose-h3:font-semibold prose-h3:uppercase prose-h3:tracking-wider prose-h3:text-gray-400
+          prose-p:text-sm prose-p:my-1.5
+          prose-strong:text-gray-100
+          prose-ul:my-1.5 prose-li:my-0.5 prose-li:text-sm
+          prose-table:text-xs prose-th:border-gray-700 prose-td:border-gray-800
+          prose-code:rounded prose-code:bg-gray-800 prose-code:px-1 prose-code:py-0.5 prose-code:text-gray-300 prose-code:before:content-none prose-code:after:content-none">
+          <ReactMarkdown>{data.markdown!}</ReactMarkdown>
+        </div>
+      ) : (
+        <div className="text-xs text-gray-500">
+          The dashboard analysis card hasn't been generated yet. From this chat,
+          type <code className="rounded bg-gray-800 px-1 py-0.5 font-mono text-gray-300">/wf-analysis</code>
+          {' '}to publish a fresh write-up here.
+        </div>
+      )}
     </div>
   );
 }

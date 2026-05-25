@@ -2,6 +2,7 @@ import { apiGet } from './client';
 import type {
   ModelInfoResponse,
   PerformanceResponse,
+  StrictWfAnalysisResponse,
   StrictWfMonthDetail,
   StrictWfResponse,
   WalkforwardResponse,
@@ -18,6 +19,14 @@ export function fetchStrictWfMonth(
 ): Promise<StrictWfMonthDetail> {
   return apiGet<StrictWfMonthDetail>(
     `/performance/strict-wf/${encodeURIComponent(universe)}/month/${year}/${month}`,
+  );
+}
+
+export function fetchStrictWfAnalysis(
+  universe: string,
+): Promise<StrictWfAnalysisResponse> {
+  return apiGet<StrictWfAnalysisResponse>(
+    `/performance/strict-wf/${encodeURIComponent(universe)}/analysis`,
   );
 }
 

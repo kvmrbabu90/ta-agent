@@ -226,6 +226,13 @@ export interface StrictWfMonthDetail {
   top_holdings: StrictWfHolding[];
 }
 
+export interface StrictWfAnalysisResponse {
+  markdown: string | null;
+  covers_through: string | null;
+  retrain_count: number | null;
+  written_at: string | null;
+}
+
 export interface StrictWfMonthlyExcessCell {
   year: number;
   month: number; // 1..12

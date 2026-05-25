@@ -481,6 +481,15 @@ class StrictWfMonthDetail(_BaseResponse):
     top_holdings: list[StrictWfHolding] = Field(default_factory=list)
 
 
+class StrictWfAnalysisResponse(_BaseResponse):
+    """Latest published WF analysis (written by the /wf-analysis slash
+    command). Markdown body + YAML frontmatter metadata."""
+    markdown: str | None = None
+    covers_through: str | None = None  # "YYYY-MM-DD" of last completed retrain
+    retrain_count: int | None = None
+    written_at: str | None = None  # ISO timestamp
+
+
 class StrictWfMonthlyExcessCell(_BaseResponse):
     """One (year, month) cell of the monthly excess heatmap.
 
