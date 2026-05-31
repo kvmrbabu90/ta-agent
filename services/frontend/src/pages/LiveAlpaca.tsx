@@ -11,8 +11,9 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { API_BASE_URL } from '@/api/client';
 
-const API_BASE = '';
+const API_BASE = API_BASE_URL;
 
 type Status = {
   connected: boolean;
