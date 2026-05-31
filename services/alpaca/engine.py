@@ -334,6 +334,100 @@ def _stop_client_id(symbol: str, signal_date: str) -> str:
     return f"kubera-stop-{symbol}-{signal_date}"
 
 
+def _parse_stop_cid(cid: str) -> Optional[tuple[str, str]]:
+    """Reverse of _stop_client_id: returns (symbol, signal_date) or None."""
+    if not cid or not cid.startswith("kubera-stop-"):
+        return None
+    # Format: kubera-stop-{symbol}-{YYYY-MM-DD}. ISO dates contain hyphens
+    # too, so split off the LAST 3 hyphen segments as the date.
+    parts = cid.split("-")
+    if len(parts) < 6:
+        return None
+    # The last 3 segments are the ISO date components; everything between
+    # 'kubera-stop-' and that is the symbol.
+    sig_date = "-".join(parts[-3:])
+    symbol = "-".join(parts[2:-3])
+    return symbol, sig_date
+
+
+def reconcile_stopped_out_lots(wrapper) -> int:
+    """Sweep Alpaca's closed-order history for fired kubera-stop-* orders.
+
+    For each FILLED stop, mark the corresponding OPEN_LONG row in
+    kubera_alpaca_signals as 'CLOSED' with a note that the stop fired.
+    The downstream queries in daily_open_run / daily_close_mark filter on
+    status='PLACED' only, so a stopped-out lot stops getting managed
+    automatically after this sweep.
+
+    Returns the number of lots newly marked CLOSED.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+    from services.alpaca import db as alp_db
+
+    client = wrapper.client
+    # 30-day window covers any lot that's still within its holding period
+    # plus a generous buffer for delayed fills / weekend wraps.
+    after = (dt.datetime.utcnow() - dt.timedelta(days=30)).replace(tzinfo=dt.timezone.utc)
+    try:
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=after, limit=500)
+        closed = list(client.get_orders(filter=req))
+    except Exception as e:
+        log.warning("reconcile: failed to pull closed orders: %s", e)
+        return 0
+
+    marked = 0
+    con = alp_db.connect()
+    try:
+        for o in closed:
+            cid = str(o.client_order_id or "")
+            parsed = _parse_stop_cid(cid)
+            if parsed is None:
+                continue
+            status = getattr(o.status, "value", str(o.status))
+            if status != "filled":
+                continue
+            sym, sig_date = parsed
+            cur = con.execute(
+                """
+                UPDATE kubera_alpaca_signals
+                   SET status = 'CLOSED',
+                       notes = COALESCE(notes, '') || ' | stop fired ' || ?
+                 WHERE intended_action = 'OPEN_LONG'
+                   AND symbol = ? AND signal_date = ?
+                   AND status = 'PLACED'
+                """,
+                (str(o.filled_at or "")[:19], sym, sig_date),
+            )
+            marked += cur.rowcount
+        con.commit()
+    finally:
+        con.close()
+    if marked:
+        log.info("reconcile: marked %d open lots as CLOSED (stop fired)", marked)
+    return marked
+
+
+def _mark_lots_closed_by_expiry(con, signal_date: str, symbols: list[str]) -> int:
+    """After a normal 5-day CLOSE_LONG is submitted, mark the originating
+    OPEN_LONG signals as CLOSED so subsequent runs ignore them."""
+    if not symbols:
+        return 0
+    placeholders = ",".join("?" * len(symbols))
+    cur = con.execute(
+        f"""
+        UPDATE kubera_alpaca_signals
+           SET status = 'CLOSED',
+               notes = COALESCE(notes, '') || ' | closed-by-expiry'
+         WHERE intended_action = 'OPEN_LONG'
+           AND signal_date = ? AND symbol IN ({placeholders})
+           AND status = 'PLACED'
+        """,
+        [signal_date, *symbols],
+    )
+    return cur.rowcount
+
+
 def _find_existing_stop(client, symbol: str, signal_date: str) -> Optional[str]:
     """Look up an open SELL stop tagged for this lot. Returns Alpaca order_id."""
     from alpaca.trading.enums import QueryOrderStatus
@@ -384,6 +478,11 @@ def daily_open_run(wrapper) -> str:
     sess = wrapper.session
     today_iso = dt.date.today().isoformat()
 
+    # ------- 0. Reconcile any lots that have been stopped out intraday -------
+    # Marks OPEN_LONG signals whose `kubera-stop-*` GTC order has FILLED as
+    # CLOSED in our DB, so subsequent queries don't try to re-manage them.
+    reconcile_stopped_out_lots(wrapper)
+
     # ------- 1. CLOSE_LONG every lot opened HOLDING_DAYS trading days ago -------
     close_signal_date = _trading_day_n_back(client, today_iso, HOLDING_DAYS)
     closes_to_submit: list[tuple[str, float]] = []
@@ -394,7 +493,7 @@ def daily_open_run(wrapper) -> str:
                 """
                 SELECT symbol, qty FROM kubera_alpaca_signals
                 WHERE signal_date = ? AND intended_action = 'OPEN_LONG'
-                  AND status IN ('PLACED', 'FILLED')
+                  AND status = 'PLACED'
                 """,
                 (close_signal_date,),
             ).fetchall()
@@ -514,12 +613,27 @@ def daily_open_run(wrapper) -> str:
         )
         log.info("open submit (OPG): %s", out)
 
-    # NOTE: stops are NOT placed here. With TIF=OPG the entries don't
-    # actually fill until the opening auction at 8:30 CT, so we can't
-    # attach SELL stops to positions we don't yet hold (Alpaca wash-trade
-    # detection rejects "open BUY + open SELL stop" on the same symbol).
-    # Stops are placed by the post-open stop-arming sweep in run() once
-    # clock.is_open transitions True.
+    # ------- 6. After CLOSE_LONG submission, mark the originating OPEN_LONG
+    #            rows as CLOSED so future runs ignore those lots.
+    if closes_to_submit:
+        con_w = alp_db.connect()
+        try:
+            n = _mark_lots_closed_by_expiry(
+                con_w, close_signal_date,
+                [s for s, _ in closes_to_submit],
+            )
+            con_w.commit()
+            log.info("marked %d open lots CLOSED (expiry, signal_date=%s)",
+                     n, close_signal_date)
+        finally:
+            con_w.close()
+
+    # NOTE: stops on TODAY's new lots are NOT placed here. With TIF=OPG the
+    # entries don't actually fill until the opening auction at 8:30 CT, so
+    # we can't attach SELL stops to positions we don't yet hold (Alpaca
+    # wash-trade detection rejects "open BUY + open SELL stop" on the same
+    # symbol). Stops are placed by the post-open stop-arming sweep in run()
+    # once clock.is_open transitions True.
     return "ok"
 
 
@@ -546,7 +660,7 @@ def post_open_stop_arming(wrapper) -> str:
             """
             SELECT symbol, qty FROM kubera_alpaca_signals
             WHERE signal_date = ? AND intended_action = 'OPEN_LONG'
-              AND status IN ('PLACED','FILLED')
+              AND status = 'PLACED'
             """,
             (today_iso,),
         ).fetchall()
@@ -585,20 +699,28 @@ def post_open_stop_arming(wrapper) -> str:
 def daily_close_mark(wrapper) -> str:
     """Recompute stop_level for every open lot from fresh end-of-day data,
     cancel the old GTC stop, place a new one at the updated level.
+
+    Stopped-out lots are reconciled first so we don't waste API calls
+    re-managing positions we no longer hold.
     """
     from services.alpaca import db as alp_db
     client = wrapper.client
     today_iso = dt.date.today().isoformat()
 
-    # Find all lots currently open: OPEN_LONG signals with status=PLACED/FILLED
+    # Reconcile any intraday stop-outs before we start refreshing.
+    reconcile_stopped_out_lots(wrapper)
+
+    # Find all lots currently open: OPEN_LONG signals with status=PLACED
     # and (signal_date) more recent than HOLDING_DAYS trading days ago.
+    # (Status='CLOSED' covers both stop-fired and expiry-closed lots and
+    # is excluded here.)
     horizon = _trading_day_n_back(client, today_iso, HOLDING_DAYS)
     con = alp_db.connect(read_only=True)
     try:
         params = []
         sql = (
             "SELECT signal_date, symbol, qty FROM kubera_alpaca_signals "
-            "WHERE intended_action='OPEN_LONG' AND status IN ('PLACED','FILLED')"
+            "WHERE intended_action='OPEN_LONG' AND status = 'PLACED'"
         )
         if horizon:
             sql += " AND signal_date > ?"
