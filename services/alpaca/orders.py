@@ -154,8 +154,15 @@ def _ensure_live_account_matches(session, cfg: RiskConfig) -> Optional[str]:
 
 def approve_and_submit(signal_ids: list[int], *, approved_by: str,
                          cfg: Optional[RiskConfig] = None,
-                         mode: Optional[Mode] = None) -> dict:
+                         mode: Optional[Mode] = None,
+                         tif: TimeInForce = TimeInForce.DAY) -> dict:
     """Approve a batch of pending signals and submit them as Alpaca orders.
+
+    `tif` controls the time-in-force on every order in the batch. The
+    Kubera engine submits with TimeInForce.OPG so orders queue pre-open
+    and fill at the opening-auction print (matches the WF backtest's
+    "open at today's OPEN price" assumption). Manual dashboard approvals
+    keep the legacy default of DAY.
 
     Returns a per-signal result dict: {signal_id: {"status": str, "reason": str|None,
     "alpaca_order_id": str|None}}.
@@ -209,7 +216,7 @@ def approve_and_submit(signal_ids: list[int], *, approved_by: str,
                     symbol=sig.symbol,
                     qty=sig.qty,
                     side=side,
-                    time_in_force=TimeInForce.DAY,
+                    time_in_force=tif,
                     order_class=OrderClass.OTO,
                     stop_loss=StopLossRequest(stop_price=stop_price),
                 )
@@ -219,7 +226,7 @@ def approve_and_submit(signal_ids: list[int], *, approved_by: str,
                     symbol=sig.symbol,
                     qty=sig.qty,
                     side=side,
-                    time_in_force=TimeInForce.DAY,
+                    time_in_force=tif,
                 )
             try:
                 order = client.submit_order(order_data=req)

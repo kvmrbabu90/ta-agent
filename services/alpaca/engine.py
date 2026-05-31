@@ -272,9 +272,10 @@ CREATE TABLE IF NOT EXISTS alpaca_engine_state (
   sync_pid        INTEGER,
   started_at      TEXT,
   last_run_at     TEXT,
-  last_run_date   TEXT,
+  last_run_date   TEXT,                -- ISO date of most recent pre-open submission
   last_run_status TEXT,
-  last_close_mark_date TEXT,
+  last_stop_arming_date TEXT,          -- ISO date stops were armed after open
+  last_close_mark_date TEXT,           -- ISO date close-mark stops were refreshed
   last_error      TEXT,
   heartbeat_at    TEXT,
   stopped_at      TEXT
@@ -286,18 +287,21 @@ INSERT OR IGNORE INTO alpaca_engine_state (id, status) VALUES (1, 'stopped');
 def _engine_db() -> sqlite3.Connection:
     con = sqlite3.connect(ENGINE_DB, timeout=30.0)
     con.executescript(ENGINE_SCHEMA)
-    # Tolerate older schema (no last_close_mark_date column) on upgrade.
-    try:
-        con.execute("ALTER TABLE alpaca_engine_state ADD COLUMN last_close_mark_date TEXT")
-        con.commit()
-    except sqlite3.OperationalError:
-        pass
+    # Tolerate older schemas on upgrade — idempotent add-column for the
+    # close-mark and stop-arming tracking fields.
+    for col in ("last_close_mark_date", "last_stop_arming_date"):
+        try:
+            con.execute(f"ALTER TABLE alpaca_engine_state ADD COLUMN {col} TEXT")
+            con.commit()
+        except sqlite3.OperationalError:
+            pass
     con.commit()
     return con
 
 
 def _heartbeat(con, *, last_run_date: Optional[str] = None,
                  last_run_status: Optional[str] = None,
+                 last_stop_arming_date: Optional[str] = None,
                  last_close_mark_date: Optional[str] = None,
                  last_error: Optional[str] = None) -> None:
     now = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -309,6 +313,9 @@ def _heartbeat(con, *, last_run_date: Optional[str] = None,
     if last_run_status is not None:
         set_clauses.append("last_run_status = ?")
         args.append(last_run_status)
+    if last_stop_arming_date is not None:
+        set_clauses.append("last_stop_arming_date = ?")
+        args.append(last_stop_arming_date)
     if last_close_mark_date is not None:
         set_clauses.append("last_close_mark_date = ?")
         args.append(last_close_mark_date)
@@ -483,33 +490,91 @@ def daily_open_run(wrapper) -> str:
         pending_open_ids.append(sid)
 
     # ------- 5. Submit. CLOSE first so we free up wash-trade lockouts. -------
-    # cfg.stop_pct=0.0 disables the OTO bracket in orders.approve_and_submit
-    # — the engine places its own rolling-low SELL stops below, separately.
+    # TIF.OPG = market-on-open. Orders queue immediately and fill in the
+    # opening auction at 9:30 ET = 8:30 CT, the same print the WF
+    # backtest's simulator opens lots against. The engine fires this
+    # routine ~30 min before the open (8:00 CT) so there's plenty of
+    # buffer if Alpaca, the network, or our state DB hiccups.
+    # cfg.stop_pct=0.0 disables OTO bracket; stops are engine-managed.
+    from alpaca.trading.enums import TimeInForce as _TIF
     from services.alpaca.orders import RiskConfig
     no_bracket = RiskConfig(stop_pct=0.0)
 
     if pending_close_ids:
         out = orders_module.approve_and_submit(
-            pending_close_ids, approved_by="kubera-engine", cfg=no_bracket,
+            pending_close_ids, approved_by="kubera-engine",
+            cfg=no_bracket, tif=_TIF.OPG,
         )
-        log.info("close submit: %s", out)
+        log.info("close submit (OPG): %s", out)
 
     if pending_open_ids:
         out = orders_module.approve_and_submit(
-            pending_open_ids, approved_by="kubera-engine", cfg=no_bracket,
+            pending_open_ids, approved_by="kubera-engine",
+            cfg=no_bracket, tif=_TIF.OPG,
         )
-        log.info("open submit: %s", out)
+        log.info("open submit (OPG): %s", out)
 
-    # ------- 6. Wait briefly for entry fills, then place initial stops -------
-    # Market orders on a paper account usually fill within ~1 second; give
-    # a few seconds of grace before placing the protective stops.
-    if pending_open_ids:
-        time.sleep(5)
-        for sym, qty, _price, stop_price in opens_to_submit:
-            if stop_price > 0:
-                _place_stop(client, symbol=sym, qty=qty, stop_price=stop_price,
-                            signal_date=today_iso, account_number=sess.account_number)
+    # NOTE: stops are NOT placed here. With TIF=OPG the entries don't
+    # actually fill until the opening auction at 8:30 CT, so we can't
+    # attach SELL stops to positions we don't yet hold (Alpaca wash-trade
+    # detection rejects "open BUY + open SELL stop" on the same symbol).
+    # Stops are placed by the post-open stop-arming sweep in run() once
+    # clock.is_open transitions True.
+    return "ok"
 
+
+# ----------------------------------------------------------------------
+# Post-open stop arming — place protective stops on lots opened today
+# ----------------------------------------------------------------------
+
+def post_open_stop_arming(wrapper) -> str:
+    """Fire shortly after the opening auction. For every OPEN_LONG signal
+    staged today that has now FILLED on Alpaca, place a GTC SELL STOP at
+    today's rolling-low stop level.
+
+    Idempotent: skips lots that already have a tagged GTC stop. Safe to
+    re-run if the post-open trigger fires twice.
+    """
+    from services.alpaca import db as alp_db
+    client = wrapper.client
+    today_iso = dt.date.today().isoformat()
+
+    # Pull today's OPEN_LONG signals that we submitted at the open.
+    con = alp_db.connect(read_only=True)
+    try:
+        rows = con.execute(
+            """
+            SELECT symbol, qty FROM kubera_alpaca_signals
+            WHERE signal_date = ? AND intended_action = 'OPEN_LONG'
+              AND status IN ('PLACED','FILLED')
+            """,
+            (today_iso,),
+        ).fetchall()
+        lots = [(r[0], float(r[1])) for r in rows]
+    finally:
+        con.close()
+    if not lots:
+        log.info("post-open stop arming: no lots opened today; nothing to arm")
+        return "ok"
+
+    symbols = sorted({s for s, _ in lots})
+    bars = _get_daily_bars(symbols, days_back=30)
+
+    armed = 0
+    for sym, qty in lots:
+        # Skip if a stop is already tagged for this lot/date.
+        if _find_existing_stop(client, sym, today_iso):
+            continue
+        b = bars.get(sym, [])
+        stop_price = _rolling_low_stop(b, SUPPORT_LOOKBACK, STOP_BUFFER_PCT)
+        if stop_price is None or stop_price <= 0:
+            log.warning("post-open arm skip %s: no rolling-low stop", sym)
+            continue
+        if _place_stop(client, symbol=sym, qty=qty, stop_price=stop_price,
+                       signal_date=today_iso,
+                       account_number=wrapper.session.account_number):
+            armed += 1
+    log.info("post-open stop arming: armed %d/%d stops", armed, len(lots))
     return "ok"
 
 
@@ -595,33 +660,79 @@ def run() -> int:
 
     con = _engine_db()
     row = con.execute(
-        "SELECT last_run_date, last_close_mark_date FROM alpaca_engine_state WHERE id = 1"
+        """SELECT last_run_date, last_stop_arming_date, last_close_mark_date
+             FROM alpaca_engine_state WHERE id = 1"""
     ).fetchone()
-    last_open_date: Optional[str] = row[0] if row and row[0] else None
-    last_close_mark_date: Optional[str] = row[1] if row and row[1] else None
+    last_run_date: Optional[str] = row[0] if row and row[0] else None
+    last_arming_date: Optional[str] = row[1] if row and row[1] else None
+    last_close_mark_date: Optional[str] = row[2] if row and row[2] else None
+
+    # Three time-based triggers, all driven by Alpaca's clock so DST is automatic.
+    #   PRE_OPEN  — submit OPG opens + closes 30 min before next_open (~8:00 CT)
+    #   POST_OPEN — arm protective stops 3 min after the open (~8:33 CT) so the
+    #               opening-auction fills have settled and we can attach SELL
+    #               stops without tripping wash-trade detection
+    #   POST_CLOSE — refresh rolling-low stops once Alpaca clock says is_open=False
+    PRE_OPEN_LEAD_MIN = 30        # fire pre-open submission this far before the open
+    PRE_OPEN_WINDOW_MIN = 25      # accept submissions over a window so a 60s tick won't miss
+    POST_OPEN_LAG_MIN = 3         # wait this long after the open before arming stops
 
     while not _stop:
         try:
             clock = wrapper.client.get_clock()
             today_iso = dt.date.today().isoformat()
+            # `clock.timestamp` is the current Alpaca server time (tz-aware UTC).
+            # `clock.next_open` is the next session's open (also tz-aware UTC).
+            now_utc = clock.timestamp
+            mins_to_open = (clock.next_open - now_utc).total_seconds() / 60.0
 
-            # Open run: when market just opened today and we haven't run yet.
-            if clock.is_open and last_open_date != today_iso:
-                log.info("market open — running Kubera open rotation for %s", today_iso)
+            # ---- PRE-OPEN: submit OPG opens + closes ----
+            # Submit when we're inside the pre-open window AND market isn't open
+            # yet AND we haven't already submitted today.
+            in_pre_open_window = (
+                (not clock.is_open)
+                and PRE_OPEN_LEAD_MIN - PRE_OPEN_WINDOW_MIN <= mins_to_open <= PRE_OPEN_LEAD_MIN + 5
+            )
+            if in_pre_open_window and last_run_date != today_iso:
+                log.info(
+                    "pre-open trigger: %.1f min to next open — submitting OPG batch for %s",
+                    mins_to_open, today_iso,
+                )
                 try:
                     status = daily_open_run(wrapper)
-                    last_open_date = today_iso
+                    last_run_date = today_iso
                     _heartbeat(con, last_run_date=today_iso, last_run_status=status)
                 except Exception as e:
                     log.exception("daily_open_run failed")
                     _heartbeat(con, last_run_status="error", last_error=str(e))
 
-            # Close-mark: market just closed today, we already ran open today,
-            # and we haven't done close-mark yet today.
+            # ---- POST-OPEN: arm protective stops on freshly-filled lots ----
+            if (clock.is_open
+                and last_run_date == today_iso
+                and last_arming_date != today_iso):
+                # Estimate minutes since open from next_close (today's close) -
+                # standard 6.5-hour session. If we're more than POST_OPEN_LAG_MIN
+                # into the session, the opening auction has settled.
+                session_elapsed_min = (
+                    (now_utc - (clock.next_close - dt.timedelta(hours=6, minutes=30)))
+                    .total_seconds() / 60.0
+                )
+                if session_elapsed_min >= POST_OPEN_LAG_MIN:
+                    log.info("post-open trigger (%.1f min into session) — arming stops",
+                             session_elapsed_min)
+                    try:
+                        post_open_stop_arming(wrapper)
+                        last_arming_date = today_iso
+                        _heartbeat(con, last_stop_arming_date=today_iso)
+                    except Exception as e:
+                        log.exception("post_open_stop_arming failed")
+                        _heartbeat(con, last_error=str(e))
+
+            # ---- POST-CLOSE: recompute & refresh stops for every open lot ----
             if (not clock.is_open
-                and last_open_date == today_iso
+                and last_run_date == today_iso
                 and last_close_mark_date != today_iso):
-                log.info("after close — running stop-level refresh for %s", today_iso)
+                log.info("post-close trigger — refreshing rolling-low stops for %s", today_iso)
                 try:
                     daily_close_mark(wrapper)
                     last_close_mark_date = today_iso

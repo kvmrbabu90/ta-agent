@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
-import { Banknote, Clock, TrendingDown, TrendingUp } from 'lucide-react';
+import { ArrowDown, ArrowUp, Banknote, ChevronsUpDown, Clock } from 'lucide-react';
 import { usePaperSnapshot, usePaperTrades } from '@/hooks/usePaper';
 import { useUniverses } from '@/hooks/useUniverses';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
@@ -38,6 +38,15 @@ function pctFmt(v: number, d = 2) {
 
 function currencySymbol(currency: Currency): string {
   return currency === 'INR' ? '₹' : '$';
+}
+
+/** Current calendar date (YYYY-MM-DD) in the market's timezone — CT for USD
+ * runs, IST for INR runs. Used to decide which day "Today's snapshots" shows,
+ * independent of where the browser is. */
+function marketToday(currency: Currency): string {
+  const tz = currency === 'INR' ? 'Asia/Kolkata' : 'America/Chicago';
+  // en-CA formats as YYYY-MM-DD, matching the trade_date strings from the API.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
 }
 
 // Universe → run_id + currency mapping. Add more entries here as new live
@@ -77,7 +86,8 @@ function describeStrategy(run: PaperRunSummary, currency: Currency): string {
     `Long-only, top ${run.n_long} by conviction (predicted return × direction agreement). ` +
     `Overlapping ${run.holding_days}-day portfolios: open a new slice each trading day, ` +
     `force-close after ${run.holding_days} bars. Slice size = current_equity / ${run.holding_days}, ` +
-    `weighted within slice by combined score. Rebalanced at ${tz} (post-open). ` +
+    `weighted within slice by combined_score / ATR(14) (conviction × inverse-vol). ` +
+    `Rebalanced at ${tz} (post-open). ` +
     `${stop[0].toUpperCase()}${stop.slice(1)}; ${costs}.`
   );
 }
@@ -245,27 +255,37 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
   starting_cash: number;
   currency: Currency;
 }) {
-  const lastDate = equity_curve.length > 0
-    ? equity_curve[equity_curve.length - 1].trade_date
-    : null;
-  const latestForDate = useMemo(() => {
-    if (!lastDate) return [] as PaperEquityPoint[];
-    return equity_curve.filter((p) => p.trade_date === lastDate);
-  }, [equity_curve, lastDate]);
+  // Always anchor on the current market date — show "Awaiting" until each
+  // run produces its snapshot, rather than falling back to the last day
+  // that happens to have data.
+  const today = marketToday(currency);
+  const todaysPoints = useMemo(
+    () => equity_curve.filter((p) => p.trade_date === today),
+    [equity_curve, today],
+  );
 
-  const open8am = latestForDate.find((p) => p.snapshot_kind === 'open_8am_ct');
-  const close5pm = latestForDate.find((p) => p.snapshot_kind === 'close_5pm_ct');
-
-  const intradayPnl = open8am && close5pm ? close5pm.equity - open8am.equity : null;
+  const open8am = todaysPoints.find((p) => p.snapshot_kind === 'open_8am_ct');
+  const close5pm = todaysPoints.find((p) => p.snapshot_kind === 'close_5pm_ct');
 
   const isIndia = currency === 'INR';
   const openLabel = isIndia ? '9:15 AM IST' : '8:00 AM CT';
   const closeLabel = isIndia ? '3:30 PM IST' : '5:00 PM CT';
 
+  // Intraday P&L only becomes meaningful once the close (post-5pm) snapshot
+  // lands. Decompose the open→close equity change into realized and
+  // unrealized deltas using the cumulative figures on each snapshot.
+  const intraday = open8am && close5pm
+    ? {
+        total: close5pm.equity - open8am.equity,
+        realized: close5pm.realized_pnl - open8am.realized_pnl,
+        unrealized: close5pm.unrealized_pnl - open8am.unrealized_pnl,
+      }
+    : null;
+
   return (
     <section className="space-y-3">
       <h2 className="text-base font-semibold text-gray-100">
-        Today&apos;s snapshots <span className="text-gray-500">({lastDate ?? '—'})</span>
+        Today&apos;s snapshots <span className="text-gray-500">({today})</span>
       </h2>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <SnapshotCard
@@ -289,15 +309,39 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
             <Banknote className="h-5 w-5 text-gray-400" />
             <span className="text-sm font-medium text-gray-300">Intraday P&amp;L</span>
           </div>
-          <div className={[
-            'mt-2 font-mono text-2xl font-semibold',
-            intradayPnl == null
-              ? 'text-gray-500'
-              : intradayPnl >= 0 ? 'text-emerald-400' : 'text-rose-400',
-          ].join(' ')}>
-            {intradayPnl == null ? '—' : signedMoneyFmt(intradayPnl, currency)}
-          </div>
-          <div className="text-[11px] text-gray-500">close − open snapshot today</div>
+          {intraday == null ? (
+            <>
+              <div className="mt-2 font-mono text-2xl font-semibold text-gray-500">
+                Awaiting
+              </div>
+              <div className="text-[11px] text-gray-500">
+                updates after the {closeLabel} close run
+              </div>
+            </>
+          ) : (
+            <>
+              <div className={[
+                'mt-2 font-mono text-2xl font-semibold',
+                intraday.total >= 0 ? 'text-emerald-400' : 'text-rose-400',
+              ].join(' ')}>
+                {signedMoneyFmt(intraday.total, currency)}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-gray-500">
+                <span>
+                  realized{' '}
+                  <span className={intraday.realized >= 0 ? 'text-emerald-400/80' : 'text-rose-400/80'}>
+                    {signedMoneyFmt(intraday.realized, currency)}
+                  </span>
+                </span>
+                <span>
+                  unrealized{' '}
+                  <span className={intraday.unrealized >= 0 ? 'text-emerald-400/80' : 'text-rose-400/80'}>
+                    {signedMoneyFmt(intraday.unrealized, currency)}
+                  </span>
+                </span>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </section>
@@ -315,12 +359,15 @@ function SnapshotCard({ icon, time, label, point, starting, currency }: {
   if (!point) {
     return (
       <div className="rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-3">
-        <div className="flex items-center gap-2">
-          {icon}
-          <span className="text-sm font-medium text-gray-300">{time}</span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {icon}
+            <span className="text-sm font-medium text-gray-300">{time}</span>
+          </div>
+          <span className="text-[11px] uppercase tracking-wider text-gray-500">{label}</span>
         </div>
-        <div className="mt-2 font-mono text-2xl font-semibold text-gray-500">—</div>
-        <div className="text-[11px] text-gray-500">{label}</div>
+        <div className="mt-2 font-mono text-2xl font-semibold text-gray-500">Awaiting</div>
+        <div className="text-[11px] text-gray-500">scheduled {time}</div>
       </div>
     );
   }
@@ -456,7 +503,106 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
 // Positions table + recent trades
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Sortable table helpers — shared by Open positions + Recent closes
+// ---------------------------------------------------------------------------
+
+type SortDir = 'asc' | 'desc';
+type SortState<K extends string> = { key: K; dir: SortDir } | null;
+type SortValue = string | number | null | undefined;
+
+function useSortState<K extends string>(initial: SortState<K> = null) {
+  const [sort, setSort] = useState<SortState<K>>(initial);
+  const toggle = (key: K) =>
+    setSort((cur) =>
+      cur && cur.key === key
+        ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: 'asc' },
+    );
+  return { sort, toggle };
+}
+
+/** Compare two cells. Nulls always sort last regardless of direction.
+ * Numbers compare numerically; everything else compares as a string. */
+function compareCells(a: SortValue, b: SortValue, dir: SortDir): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  const r =
+    typeof a === 'number' && typeof b === 'number'
+      ? a - b
+      : String(a).localeCompare(String(b));
+  return dir === 'asc' ? r : -r;
+}
+
+function sortRows<T, K extends string>(
+  rows: T[],
+  sort: SortState<K>,
+  accessors: Record<K, (row: T) => SortValue>,
+): T[] {
+  if (!sort) return rows;
+  const acc = accessors[sort.key];
+  return [...rows].sort((a, b) => compareCells(acc(a), acc(b), sort.dir));
+}
+
+function SortableTh<K extends string>({
+  label, sortKey, align = 'left', sort, onSort, title,
+}: {
+  label: string;
+  sortKey: K;
+  align?: 'left' | 'right';
+  sort: SortState<K>;
+  onSort: (key: K) => void;
+  title?: string;
+}) {
+  const active = sort?.key === sortKey;
+  const dir = active ? sort!.dir : null;
+  return (
+    <th className={`px-3 py-2 ${align === 'right' ? 'text-right' : 'text-left'}`} title={title}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={[
+          'inline-flex items-center gap-1 uppercase tracking-wider hover:text-gray-300',
+          active ? 'text-gray-300' : '',
+        ].join(' ')}
+      >
+        <span>{label}</span>
+        {dir === 'asc' ? (
+          <ArrowUp className="h-3 w-3" />
+        ) : dir === 'desc' ? (
+          <ArrowDown className="h-3 w-3" />
+        ) : (
+          <ChevronsUpDown className="h-3 w-3 opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+}
+
+type PositionSortKey =
+  | 'symbol' | 'qty' | 'entry' | 'entry_date' | 'lots'
+  | 'planned_exit' | 'stop' | 'last' | 'pnl';
+
+const POSITION_ACCESSORS: Record<PositionSortKey, (p: PaperPosition) => SortValue> = {
+  symbol: (p) => p.symbol,
+  qty: (p) => p.qty,
+  entry: (p) => p.entry_price,
+  entry_date: (p) => p.entry_date,
+  lots: (p) => p.lot_count,
+  planned_exit: (p) => p.planned_exit_date,
+  stop: (p) => p.stop_level,
+  last: (p) => p.last_price,
+  pnl: (p) => p.unrealized_pnl,
+};
+
 function PositionsTable({ positions, currency }: { positions: PaperPosition[]; currency: Currency }) {
+  const { sort, toggle } = useSortState<PositionSortKey>();
+  const rows = useMemo(
+    () => sortRows(positions, sort, POSITION_ACCESSORS),
+    [positions, sort],
+  );
+
   if (positions.length === 0) {
     return (
       <section className="space-y-3">
@@ -475,53 +621,39 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
         <table className="w-full text-sm">
           <thead className="bg-gray-900 text-[11px] uppercase tracking-wider text-gray-500">
             <tr>
-              <th className="px-3 py-2 text-left">Symbol</th>
-              <th className="px-3 py-2 text-left">Side</th>
-              <th className="px-3 py-2 text-right">Qty</th>
-              <th className="px-3 py-2 text-right">Entry</th>
-              <th
-                className="px-3 py-2 text-right"
+              <SortableTh label="Symbol" sortKey="symbol" sort={sort} onSort={toggle} />
+              <SortableTh label="Qty" sortKey="qty" align="right" sort={sort} onSort={toggle} />
+              <SortableTh label="Entry" sortKey="entry" align="right" sort={sort} onSort={toggle} />
+              <SortableTh
+                label="Entry Date" sortKey="entry_date" align="right" sort={sort} onSort={toggle}
                 title="Entry date of the OLDEST lot for this symbol. When the position is held across multiple overlapping tranches (e.g. rebought daily across 5 days), this shows the first entry."
-              >
-                Entry Date
-              </th>
-              <th
-                className="px-3 py-2 text-right"
+              />
+              <SortableTh
+                label="Lots" sortKey="lots" align="right" sort={sort} onSort={toggle}
+                title="Number of open lots (entry orders) aggregated into this row. Overlapping portfolios rebuy a symbol across trading days; this is how many legs are still held."
+              />
+              <SortableTh
+                label="Exit (planned)" sortKey="planned_exit" align="right" sort={sort} onSort={toggle}
                 title="Forced-close date for the position. Computed as entry-of-the-NEWEST lot + holding_days (5) trading days. Position fully closes by then unless the stop fires earlier."
-              >
-                Exit (planned)
-              </th>
-              <th
-                className="px-3 py-2 text-right"
+              />
+              <SortableTh
+                label="Stop" sortKey="stop" align="right" sort={sort} onSort={toggle}
                 title="Stop-loss level. Tightest stop across active lots (highest level for a long). Position closes if price touches this level at the 5pm CT check."
-              >
-                Stop
-              </th>
-              <th className="px-3 py-2 text-right">Last</th>
-              <th className="px-3 py-2 text-right">P&amp;L</th>
+              />
+              <SortableTh label="Last" sortKey="last" align="right" sort={sort} onSort={toggle} />
+              <SortableTh label="P&L" sortKey="pnl" align="right" sort={sort} onSort={toggle} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {positions.map((p) => {
-              const isLong = p.side === 'long';
+            {rows.map((p) => {
               const isPosPnl = p.unrealized_pnl >= 0;
               return (
                 <tr key={p.symbol} className="hover:bg-gray-900/80">
                   <td className="px-3 py-2 font-mono text-gray-100">{p.symbol}</td>
-                  <td className="px-3 py-2">
-                    <span className={[
-                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase',
-                      isLong
-                        ? 'bg-emerald-500/15 text-emerald-300'
-                        : 'bg-rose-500/15 text-rose-300',
-                    ].join(' ')}>
-                      {isLong ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-                      {p.side}
-                    </span>
-                  </td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">{p.qty.toFixed(3)}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-400">{sym}{p.entry_price.toFixed(2)}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-500">{p.entry_date}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-300">{p.lot_count}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-500">
                     {p.planned_exit_date ?? '—'}
                   </td>
@@ -544,7 +676,27 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
   );
 }
 
+type TradeSortKey =
+  | 'date' | 'symbol' | 'action' | 'entry_date' | 'entry' | 'price' | 'realized';
+
+const TRADE_ACCESSORS: Record<TradeSortKey, (t: PaperTrade) => SortValue> = {
+  date: (t) => t.trade_date,
+  symbol: (t) => t.symbol,
+  action: (t) => t.side,
+  entry_date: (t) => t.entry_date,
+  entry: (t) => t.entry_price,
+  price: (t) => t.fill_price,
+  realized: (t) => t.realized_pnl,
+};
+
 function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading: boolean; currency: Currency }) {
+  const { sort, toggle } = useSortState<TradeSortKey>();
+  // Sort the full set before truncating so a sort reflects all closes, not
+  // just the 30 most recent. (Default — no sort — keeps the API's date-desc order.)
+  const rows = useMemo(
+    () => sortRows(data, sort, TRADE_ACCESSORS).slice(0, 30),
+    [data, sort],
+  );
   const sym = currencySymbol(currency);
   return (
     <section className="space-y-3">
@@ -560,15 +712,17 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
           <table className="w-full text-sm">
             <thead className="bg-gray-900 text-[11px] uppercase tracking-wider text-gray-500">
               <tr>
-                <th className="px-3 py-2 text-left">Date</th>
-                <th className="px-3 py-2 text-left">Symbol</th>
-                <th className="px-3 py-2 text-left">Action</th>
-                <th className="px-3 py-2 text-right">Price</th>
-                <th className="px-3 py-2 text-right">Realized</th>
+                <SortableTh label="Date" sortKey="date" sort={sort} onSort={toggle} />
+                <SortableTh label="Symbol" sortKey="symbol" sort={sort} onSort={toggle} />
+                <SortableTh label="Action" sortKey="action" sort={sort} onSort={toggle} />
+                <SortableTh label="Entry Date" sortKey="entry_date" align="right" sort={sort} onSort={toggle} />
+                <SortableTh label="Entry" sortKey="entry" align="right" sort={sort} onSort={toggle} />
+                <SortableTh label="Price" sortKey="price" align="right" sort={sort} onSort={toggle} />
+                <SortableTh label="Realized" sortKey="realized" align="right" sort={sort} onSort={toggle} />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {data.slice(0, 30).map((t, i) => {
+              {rows.map((t, i) => {
                 const isLong = t.side.startsWith('long');
                 const isOpen = t.side.endsWith('_open');
                 const realized = t.realized_pnl ?? 0;
@@ -586,6 +740,10 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
                       ].join(' ')}>
                         {t.side.replace('_', ' ')}
                       </span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-500">{t.entry_date ?? '—'}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-400">
+                      {t.entry_price != null ? `${sym}${t.entry_price.toFixed(2)}` : '—'}
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-gray-300">{sym}{t.fill_price.toFixed(2)}</td>
                     <td className={[

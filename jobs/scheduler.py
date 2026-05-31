@@ -45,9 +45,16 @@ from apscheduler.triggers.cron import CronTrigger
 from packages.common.logging import log
 
 # Live paper account "go-live" date — anything older is excluded so the
-# dashboard equity curve always starts at $1,000 on this date. Update to
-# re-baseline (e.g. after a strategy change worth marking fresh).
-LIVE_PAPER_START_DATE = date(2026, 5, 11)
+# dashboard equity curve always starts at the configured starting cash on
+# this date. Update to re-baseline (e.g. after a strategy change worth
+# marking fresh).
+LIVE_PAPER_START_DATE = date(2026, 6, 1)
+# Starting cash for the live paper run. Pinned here so the simulator
+# re-builds the run with the right baseline on every pipeline tick (the
+# backtest() function rewrites paper_runs.default.starting_cash from
+# StrategyConfig on each fire — leaving this as the StrategyConfig
+# default would silently revert any DB-side manual rebase).
+LIVE_PAPER_STARTING_CASH = 200_000.0
 
 # ---------------------------------------------------------------------------
 # Job wrappers — keep imports lazy so a failing optional dependency doesn't
@@ -149,6 +156,7 @@ def _job_paper_backtest() -> None:
         lambda: backtest(StrategyConfig(
             run_id="default",
             start_date=LIVE_PAPER_START_DATE,
+            starting_cash=LIVE_PAPER_STARTING_CASH,
         )),
     )
 
