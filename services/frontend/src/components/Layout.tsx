@@ -115,7 +115,7 @@ export function Layout({ children }: LayoutProps) {
           <div className="flex items-center gap-3">
             <Activity className="h-5 w-5 text-emerald-400" />
             <NavLink to="/" className="text-base font-semibold text-gray-100">
-              ta-agent
+              Kubera
             </NavLink>
             <span className="hidden text-xs text-gray-500 sm:inline">technical-analysis ML, daily picks</span>
           </div>
