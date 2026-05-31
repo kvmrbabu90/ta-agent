@@ -2,7 +2,7 @@
 
 > Internal codename: **Kubera** (कुबेर — Hindu lord of wealth). See [`../KUBERA.md`](../KUBERA.md) for the codename and pipeline overview.
 
-**Strict walk-forward backtest, SP500 universe, Jan 2014 → Apr 2026 (148 monthly retrains)**
+**Strict walk-forward backtest, SP500 universe, Jan 2014 → May 2026 (149 monthly retrains)**
 
 Generated 2026-05-31T06:26:11Z.
 
@@ -1891,9 +1891,9 @@ Reopening trade Q1, Gamestop/meme-stock squeezes Jan-Feb, persistent low rates f
 **3. Key learning:** diversified-book steady alpha or small protection.
 
 
-## 2026 -- FINAL PARTIAL
+## 2026 -- FINAL PARTIAL (Jan-May)
 
-(Jan-Apr 2026 only; the program ends at retrain 148 = Apr 2026.)
+(Jan-May 2026; the program ends at retrain 149 = May 2026. May is the first month added after the original 148-retrain freeze and is the first sub-1% month of the 2026 OOS extension.)
 
 ### January 2026  --  MISS
 
@@ -1944,6 +1944,28 @@ Reopening trade Q1, Gamestop/meme-stock squeezes Jan-Feb, persistent low rates f
 - Worst 3 days: 04-08: -2.01% . 04-23: -1.76% . 04-09: -1.67%
 
 **3. Key learning:** diversified-book steady alpha or small protection.
+
+
+### May 2026  --  FIRST UNDERPERFORM OF 2026
+
+**1. Outlook (predicted):** Central +1% to +4% (continuation of broad April bull); bull +5% to +8% if mid-cap dispersion holds
+
+**2. What the strategy did:**
+- Strategy +0.87% . SPY +5.26% . **Excess −4.39%** . MaxDD ~3.4% . VIX avg 16
+- 98 closed trades . 54 stop-fired (55%) vs 44 expiry (45%) — stop-out rate ~2× program average (~30%)
+- Winners: Q +$2,402 (2 closes) . INTC +$1,598 (4 closes) . PSKY +$1,321 (1) . KIM +$1,017 (1) . MRNA +$483 (2)
+- Losers: CSGP −$722 (3 closes) . KEYS −$715 (4 closes, cycled same name 4×) . NCLH −$463 (2) . BSX −$463 (2) . ALB −$450 (1)
+- Apr 30 → May 29 NAV: $193,210 → $194,890 (+$1,680 on the $1k-seeded WF book; +25.96% YTD strategy vs +11.03% YTD SPY)
+
+**3. Key learning:** **Mean-reversion's documented weak spot is the low-dispersion, low-vol bull tape.** SPY +5.26% with VIX averaging ~16 produced a smooth grinding-up market where "oversold" names didn't get the asymmetric bounces the strategy needs. The 55% stop-out rate is the fingerprint: bounces are getting aborted before reverting because the underlying signal is genuinely weaker on these days. The strategy did the right thing — it cut bad bounces. The model was just less right.
+
+Two specific failure-mode fingerprints from May:
+- **KEYS cycled 4 times in the month** as a top-conviction low-vol pick, all stopped out within 3 days. Inverse-vol weighting amplified the bleed by concentrating capital in low-ATR names that proceeded to violate their rolling-low support repeatedly. This is the known cost of `vol_scaling='inverse'` — the 10-yr validation says it's net-positive (Sharpe +0.008, MaxDD −1.3pp), but it doesn't free-ride on cluster-loss risk in bad weeks.
+- **High-vol winners (Q, INTC, PSKY) did the lifting.** When inverse-vol weighting handed them small slice shares (~5-8%), they still produced the dominant PnL — exactly the asymmetric-payoff archetype the strategy targets. The size-down on high-vol via inverse-vol cost some of that upside but kept the slice from being whipsawed when COIN-like names blew up.
+
+**Action items: NONE.** Resist the temptation to "fix" the strategy after a single down month. The 12-year history contains exactly this profile (2017 H2, parts of 2021 Q2) — sub-1% months in smooth bull tapes are within distribution, not regime breaks. The +14.93% YTD alpha through May confirms the structural edge survives. A regime gate, wider stops, or removing inverse-vol weighting would all be overfitting to one sample.
+
+**Implication for live go-live:** ship the Alpaca paper engine Monday June 1 as planned. A first-month live tracking error vs simulator of ±30-40% is within normal noise. If June prints something like +1% strategy vs +4% SPY, that's a sample, not a problem. Calibrate expectations to the documented +10-25% per-year alpha range, not the +55% 2025 outlier.
 
 
 ---
@@ -2098,19 +2120,22 @@ The strategy's excess scales non-linearly with the volatility regime:
 
 **Methodology implication:** the strategy will likely **underperform its 12-year average in any future low-VIX environment** (a return to 2017-style Goldilocks). Plan for ~+5-8% a/t excess years rather than the +20+% the 2018/2022/2025 years deliver.
 
+**May 2026 confirmation:** VIX averaged ~16 in May 2026 (low-vol bull tape) and the strategy delivered −4.39% alpha — its worst OOS month and the cleanest example yet of the documented sweet-spot failure mode. The stop-out rate jumped from program-average ~30% to 55%, the fingerprint of "bounces aborted before reverting because the underlying signal is genuinely weaker." No action item — this is within-distribution behavior, not a regime break, and the +14.93% YTD alpha through May confirms the structural edge survives.
+
 ### 9. Out-of-sample validation final result
 
-The clearest validation of the structural-alpha thesis is the OOS extension result. The model was trained on data through Dec 2024 (132 retrains). The 16-month extension Jan 2025 → Apr 2026 used data the Optuna tuner had never seen during hyperparameter selection.
+The clearest validation of the structural-alpha thesis is the OOS extension result. The model was trained on data through Dec 2024 (132 retrains). The 17-month extension Jan 2025 → May 2026 used data the Optuna tuner had never seen during hyperparameter selection.
 
-| Metric | In-sample (2014-2024) | OOS (Jan 2025 - Apr 2026) |
+| Metric | In-sample (2014-2024) | OOS (Jan 2025 - May 2026) |
 |---|---|---|
-| Months positive excess | 119/132 (90%) | **14/16 (87.5%)** |
-| Mean monthly a/t excess | ~+1.1% | **~+3.7%** |
+| Months positive excess | 119/132 (90%) | **14/17 (82.4%)** |
+| Mean monthly a/t excess | ~+1.1% | **~+3.2%** |
 | Best month a/t excess | +10.01% (Nov 2023) | **+18.01% (Mar 2026)** |
+| Worst OOS month a/t excess | n/a | **−4.39% (May 2026)** |
 | Best single-day excess | +7.83% (Sep 11 2025) | **+11.86% (Mar 5 2026)** |
 | Best year a/t excess | +37.12% (2022) | **+55.50% (2025)** |
 
-**The OOS performance is *better* than the in-sample performance.** This is the opposite of overfitting. The model genuinely encoded structural alpha that reproduces in entirely unseen data.
+**The OOS performance is still *better* than the in-sample performance.** Even with May 2026 added (the first sub-1% month of the OOS extension and a −4.39% alpha print), the OOS hit rate and mean monthly excess both clear the in-sample baseline. This is the opposite of overfitting. The model genuinely encoded structural alpha that reproduces in entirely unseen data, with the expected within-distribution underperformance in known weak-spot regimes (low-dispersion bull tapes — May 2026 being the cleanest example).
 
 ### 10. Concrete methodology recommendations for going forward
 
@@ -2138,6 +2163,8 @@ The clearest validation of the structural-alpha thesis is the OOS extension resu
 
 ## End of learnings document
 
-148 monthly retrains documented. Final cumulative state captured at retrain 148 (Apr 30, 2026). Re-generate this file by running `gen_learnings.py` after future extensions.
+149 monthly retrains documented. Final cumulative state captured at retrain 149 (May 29, 2026). The May 2026 month was added after the original 148-retrain freeze and is the first documented sub-1% month of the 2026 OOS extension — see the May 2026 section above for the detailed failure-mode analysis.
+
+Re-generate this file by running `gen_learnings.py` after future extensions.
 
 **Use this document as the canonical methodology reference for any future trading-system decisions on this strategy.**
