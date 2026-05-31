@@ -39,6 +39,9 @@ from services.api.routes import (
     news as news_routes,
 )
 from services.api.routes import (
+    live_ibkr as live_ibkr_routes,
+)
+from services.api.routes import (
     system as system_routes,
 )
 from services.api.routes import (
@@ -100,6 +103,7 @@ app.include_router(admin_routes.router)
 app.include_router(paper_routes.router)
 app.include_router(system_routes.router)
 app.include_router(news_routes.router)
+app.include_router(live_ibkr_routes.router)
 
 
 @app.get("/health", tags=["meta"])
