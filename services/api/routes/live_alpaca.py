@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from services.alpaca import db as alp_db
 from services.alpaca import reconciliation as recon
 from services.alpaca import orders as orders_module
+from services.alpaca import engine_state
 from services.alpaca.orders import RiskConfig
 
 router = APIRouter(prefix="/live-alpaca", tags=["live-alpaca"])
@@ -281,3 +282,52 @@ def reject_signals(req: RejectRequest) -> dict:
         raise HTTPException(status_code=400, detail="signal_ids must not be empty")
     n = orders_module.reject(req.signal_ids, reason=req.reason)
     return {"rejected": n}
+
+
+# ----------------------------------------------------------------------
+# Kubera engine — start/stop/status
+# ----------------------------------------------------------------------
+
+class EngineStatusResponse(BaseModel):
+    status: str                          # 'stopped' | 'running' | 'error'
+    pid: Optional[int] = None
+    sync_pid: Optional[int] = None
+    engine_alive: bool = False
+    sync_alive: bool = False
+    started_at: Optional[str] = None
+    last_run_at: Optional[str] = None
+    last_run_date: Optional[str] = None
+    last_run_status: Optional[str] = None
+    last_error: Optional[str] = None
+    heartbeat_at: Optional[str] = None
+    stopped_at: Optional[str] = None
+
+
+def _to_response(s: engine_state.EngineStatus) -> EngineStatusResponse:
+    return EngineStatusResponse(
+        status=s.status, pid=s.pid, sync_pid=s.sync_pid,
+        engine_alive=s.engine_alive, sync_alive=s.sync_alive,
+        started_at=s.started_at, last_run_at=s.last_run_at,
+        last_run_date=s.last_run_date, last_run_status=s.last_run_status,
+        last_error=s.last_error, heartbeat_at=s.heartbeat_at,
+        stopped_at=s.stopped_at,
+    )
+
+
+@router.get("/engine/status", response_model=EngineStatusResponse)
+def engine_status_endpoint() -> EngineStatusResponse:
+    return _to_response(engine_state.status())
+
+
+@router.post("/engine/start", response_model=EngineStatusResponse)
+def engine_start_endpoint() -> EngineStatusResponse:
+    try:
+        s = engine_state.start()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return _to_response(s)
+
+
+@router.post("/engine/stop", response_model=EngineStatusResponse)
+def engine_stop_endpoint() -> EngineStatusResponse:
+    return _to_response(engine_state.stop())

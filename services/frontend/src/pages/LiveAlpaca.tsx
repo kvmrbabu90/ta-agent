@@ -80,6 +80,21 @@ type ReconResp = {
   total_notional: number;
 };
 
+type EngineStatus = {
+  status: 'stopped' | 'running' | 'error';
+  pid: number | null;
+  sync_pid: number | null;
+  engine_alive: boolean;
+  sync_alive: boolean;
+  started_at: string | null;
+  last_run_at: string | null;
+  last_run_date: string | null;
+  last_run_status: string | null;
+  last_error: string | null;
+  heartbeat_at: string | null;
+  stopped_at: string | null;
+};
+
 type PendingSignal = {
   id: number;
   signal_date: string;
@@ -134,6 +149,28 @@ export function LiveAlpacaPage() {
     queryKey: ['alpaca', 'pending'],
     queryFn: () => fetch(API_BASE + '/live-alpaca/signals/pending').then(r => r.json()),
     refetchInterval: 5000,
+  });
+  const engine = useQuery<EngineStatus>({
+    queryKey: ['alpaca', 'engine'],
+    queryFn: () => fetch(API_BASE + '/live-alpaca/engine/status').then(r => r.json()),
+    refetchInterval: 5000,
+  });
+
+  const engineStartMut = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(API_BASE + '/live-alpaca/engine/start', { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).detail || 'start failed');
+      return r.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['alpaca', 'engine'] }),
+  });
+  const engineStopMut = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(API_BASE + '/live-alpaca/engine/stop', { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).detail || 'stop failed');
+      return r.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['alpaca', 'engine'] }),
   });
 
   const approveMut = useMutation({
@@ -237,6 +274,70 @@ export function LiveAlpacaPage() {
             🚨 <strong>LIVE MODE.</strong> Orders submitted here will use real capital from account{' '}
             <code className="font-mono">{s.account_number}</code>. To approve any signal you must type the account number below.
           </div>
+        )}
+      </section>
+
+      {/* ============== KUBERA ENGINE CONTROL ============== */}
+      <section className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h2 className="text-[11px] uppercase tracking-wider text-gray-500">Kubera engine</h2>
+            <EngineBadge engine={engine.data} />
+            {engine.data?.last_run_date && (
+              <span className="text-xs text-gray-500">
+                last run <span className="font-mono text-gray-300">{engine.data.last_run_date}</span>
+                {engine.data.last_run_status && (
+                  <span
+                    className={
+                      'ml-1 ' +
+                      (engine.data.last_run_status === 'ok'
+                        ? 'text-emerald-400'
+                        : engine.data.last_run_status === 'error'
+                          ? 'text-rose-400'
+                          : 'text-amber-400')
+                    }
+                  >
+                    ({engine.data.last_run_status})
+                  </span>
+                )}
+              </span>
+            )}
+            {engine.data?.heartbeat_at && engine.data.status === 'running' && (
+              <span className="text-xs text-gray-500">
+                heartbeat <span className="font-mono text-gray-400">{new Date(engine.data.heartbeat_at).toLocaleTimeString()}</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {engine.data?.status === 'running' ? (
+              <button
+                onClick={() => engineStopMut.mutate()}
+                disabled={engineStopMut.isPending}
+                className="rounded bg-rose-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-40"
+              >
+                {engineStopMut.isPending ? 'Stopping…' : 'Stop Kubera'}
+              </button>
+            ) : (
+              <button
+                onClick={() => engineStartMut.mutate()}
+                disabled={engineStartMut.isPending || !status.data?.connected}
+                className="rounded bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                title={!status.data?.connected ? 'Connect to Alpaca first' : undefined}
+              >
+                {engineStartMut.isPending ? 'Starting…' : 'Start Kubera'}
+              </button>
+            )}
+          </div>
+        </div>
+        {engine.data?.last_error && (
+          <div className="mt-2 rounded bg-rose-950/40 p-2 text-xs text-rose-300">
+            last error: <span className="font-mono">{engine.data.last_error}</span>
+          </div>
+        )}
+        {engine.data?.status === 'running' && (
+          <p className="mt-2 text-[11px] text-gray-500">
+            Engine + sync are running as detached processes (engine pid <span className="font-mono">{engine.data.pid ?? '—'}</span>, sync pid <span className="font-mono">{engine.data.sync_pid ?? '—'}</span>). They survive API restarts and this terminal closing. Daily rotation fires at market open.
+          </p>
         )}
       </section>
 
@@ -455,6 +556,28 @@ export function LiveAlpacaPage() {
         )}
       </section>
     </div>
+  );
+}
+
+function EngineBadge({ engine }: { engine: EngineStatus | undefined }) {
+  if (!engine || engine.status === 'stopped') {
+    return (
+      <span className="rounded-full bg-gray-800 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+        ● STOPPED
+      </span>
+    );
+  }
+  if (engine.status === 'error') {
+    return (
+      <span className="rounded-full bg-rose-700 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+        ● ERROR
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full bg-emerald-700 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+      ● RUNNING
+    </span>
   );
 }
 

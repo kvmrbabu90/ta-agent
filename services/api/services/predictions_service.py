@@ -973,10 +973,11 @@ _STRICT_WF_PATHS = {
         # Monthly retrains expected between the WF's --start and --end.
         # 148 = Jan 2014 → Apr 2026 inclusive (12 years 4 months). Was
         # 132 (Jan 2014 → Dec 2024) under the original 10-year program;
-        # the extension to Apr 2026 added 16 retrains. **Update this if
-        # the WF's --end flag changes** — it drives the progress bar,
-        # the X/Y display, the ETA, and the running-state heuristic.
-        "expected_retrains": 148,
+        # the extension to Apr 2026 added 16 retrains; adding May 2026
+        # bumps to 149. **Update this if the WF's --end flag changes** —
+        # it drives the progress bar, the X/Y display, the ETA, and the
+        # running-state heuristic.
+        "expected_retrains": 149,
     },
 }
 
