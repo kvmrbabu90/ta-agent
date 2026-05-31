@@ -65,11 +65,20 @@ def _handle_signal(_signum, _frame):
 # ----------------------------------------------------------------------
 
 def _top_picks(as_of: str, n: int = TOP_N_PICKS) -> list[tuple[str, float]]:
-    """Top-N symbols by predicted_return for the given as_of date.
+    """Top-N symbols by Kubera *combined score* for the given as_of date.
 
-    Returns [(symbol, predicted_return), ...] sorted descending.
-    Falls back to the most recent as_of in the DB if `as_of` itself has
-    no rows (e.g. weekend, holiday — we want Friday's picks for Monday).
+    Combined score (matches the WF backtest + the Paper Trade simulator):
+        score = predicted_return * (1 + direction_agreement)
+              = predicted_return * (1 + (top_quintile_proba - bottom_quintile_proba))
+
+    This is Kubera's actual conviction-weighted ranking — high-return picks
+    where the classification head also strongly agrees on direction get a
+    boost; picks where the heads disagree get penalised. Using
+    predicted_return alone (what an earlier draft of this engine did)
+    diverges from the simulator on ~10–20% of days.
+
+    Returns [(symbol, score), ...] sorted descending. Falls back to the
+    most recent as_of <= today so Monday gets Friday's picks.
     """
     p = Path(PREDICTIONS_DB)
     if not p.exists():
@@ -77,7 +86,6 @@ def _top_picks(as_of: str, n: int = TOP_N_PICKS) -> list[tuple[str, float]]:
         return []
     con = sqlite3.connect("file:" + p.as_posix() + "?mode=ro", uri=True, timeout=10.0)
     try:
-        # Use the latest as_of <= today (so on Monday we get Friday's picks).
         latest = con.execute(
             "SELECT MAX(as_of) FROM predictions_log WHERE as_of <= ?",
             (as_of,),
@@ -87,15 +95,17 @@ def _top_picks(as_of: str, n: int = TOP_N_PICKS) -> list[tuple[str, float]]:
             return []
         rows = con.execute(
             """
-            SELECT symbol, predicted_return
+            SELECT symbol,
+                   predicted_return * (1.0 + (COALESCE(top_quintile_proba, 0.0)
+                                              - COALESCE(bottom_quintile_proba, 0.0))) AS combined_score
             FROM predictions_log
             WHERE as_of = ?
-            ORDER BY predicted_return DESC, symbol ASC
+            ORDER BY combined_score DESC, symbol ASC
             LIMIT ?
             """,
             (latest, n),
         ).fetchall()
-        log.info("picks for %s (as_of=%s): %s",
+        log.info("picks for %s (as_of=%s, conviction-weighted): %s",
                  as_of, latest, [(s, round(r, 5)) for s, r in rows])
         return [(str(s), float(r)) for s, r in rows]
     finally:
