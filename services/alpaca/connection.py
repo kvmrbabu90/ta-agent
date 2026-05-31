@@ -24,13 +24,14 @@ Override mode programmatically by passing `mode=` to KuberaAlpaca().
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass
 from typing import Literal, Optional
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.models import TradeAccount
+
+from packages.common.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class AlpacaSession:
 def _resolve_mode(mode: Optional[Mode]) -> Mode:
     if mode is not None:
         return mode
-    raw = (os.environ.get("ALPACA_MODE") or "paper").strip().lower()
+    raw = (settings.alpaca_mode or "paper").strip().lower()
     if raw not in ("paper", "live"):
         raise ValueError(f"ALPACA_MODE must be 'paper' or 'live', got {raw!r}")
     return raw  # type: ignore[return-value]
@@ -69,22 +70,22 @@ def _resolve_mode(mode: Optional[Mode]) -> Mode:
 
 def _load_keys(mode: Mode) -> tuple[str, str]:
     if mode == "paper":
-        key = os.environ.get("ALPACA_PAPER_KEY", "").strip()
-        sec = os.environ.get("ALPACA_PAPER_SECRET", "").strip()
+        key = (settings.alpaca_paper_key or "").strip()
+        sec = (settings.alpaca_paper_secret or "").strip()
         if not key or not sec:
             raise RuntimeError(
                 "ALPACA_PAPER_KEY / ALPACA_PAPER_SECRET not set. "
                 "Get them from https://app.alpaca.markets/paper/dashboard/overview "
-                "and set them in your shell or .env."
+                "and set them in your .env."
             )
         return key, sec
-    key = os.environ.get("ALPACA_LIVE_KEY", "").strip()
-    sec = os.environ.get("ALPACA_LIVE_SECRET", "").strip()
+    key = (settings.alpaca_live_key or "").strip()
+    sec = (settings.alpaca_live_secret or "").strip()
     if not key or not sec:
         raise RuntimeError(
             "ALPACA_LIVE_KEY / ALPACA_LIVE_SECRET not set. "
             "Get them from https://app.alpaca.markets/brokerage/dashboard/overview "
-            "and set them in your shell or .env."
+            "and set them in your .env."
         )
     return key, sec
 

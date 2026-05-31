@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # Finnhub (earnings dates / surprises)
     finnhub_api_key: str = ""
 
+    # Alpaca — paper + live key pairs can both be set; ALPACA_MODE picks one.
+    # Get keys from https://app.alpaca.markets/paper/dashboard/overview (paper)
+    # or https://app.alpaca.markets/brokerage/dashboard/overview (live).
+    alpaca_mode: str = "paper"          # "paper" | "live"
+    alpaca_paper_key: str = ""
+    alpaca_paper_secret: str = ""
+    alpaca_live_key: str = ""
+    alpaca_live_secret: str = ""
+
     # Storage
     duckdb_path: str = str(PROCESSED_DIR / "market.duckdb")
     predictions_sqlite_path: str = str(PROCESSED_DIR / "predictions.sqlite")

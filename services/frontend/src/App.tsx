@@ -2,7 +2,6 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { DashboardPage } from '@/pages/Dashboard';
 import { LiveWFPage } from '@/pages/LiveWF';
-import { LiveIbkrPage } from '@/pages/LiveIbkr';
 import { LiveAlpacaPage } from '@/pages/LiveAlpaca';
 import { PaperTradePage } from '@/pages/PaperTrade';
 import { PerformancePage } from '@/pages/Performance';
@@ -18,7 +17,6 @@ export function App() {
         <Route path="/performance" element={<PerformancePage />} />
         <Route path="/live-wf" element={<LiveWFPage />} />
         <Route path="/paper" element={<PaperTradePage />} />
-        <Route path="/live-ibkr" element={<LiveIbkrPage />} />
         <Route path="/live-alpaca" element={<LiveAlpacaPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
