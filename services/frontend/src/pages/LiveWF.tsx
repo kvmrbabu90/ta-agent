@@ -1,10 +1,14 @@
 import {
+  Bar,
+  BarChart,
   Brush,
   CartesianGrid,
+  Cell,
   Label,
   Line,
   LineChart,
   ReferenceDot,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -115,6 +119,10 @@ function UniverseSection({
             benchKey={data.benchmark_symbol}
             currency={data.currency}
             startingCapital={data.summary.starting_capital}
+          />
+          <MonthlyHistograms
+            cells={data.monthly_excess}
+            benchKey={data.benchmark_symbol}
           />
           <MonthlyExcessHeatmap
             cells={data.monthly_excess}
@@ -400,6 +408,105 @@ function EquityCurveChart({
   currency: string;
   startingCapital: number;
 }) {
+  // Persisted user preferences for this chart, survive page reloads via
+  // localStorage. Stored as JSON under EQUITY_CHART_PREFS_KEY. The Brush
+  // window is saved as DATES (not indices) so it stays anchored to the
+  // same points after new retrains extend the time series.
+  const EQUITY_CHART_PREFS_KEY = 'wf-equity-chart-prefs-v1';
+  type EquityChartPrefs = {
+    showPreTax?: boolean;
+    brushStartDate?: string;
+    brushEndDate?: string;
+  };
+  const readPrefs = (): EquityChartPrefs => {
+    try {
+      const raw = localStorage.getItem(EQUITY_CHART_PREFS_KEY);
+      return raw ? (JSON.parse(raw) as EquityChartPrefs) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  // Show/hide the pre-tax (dotted) series. Pre-tax compounds at the
+  // gross strategy rate and runs ~3× higher than the post-tax line in
+  // late years (after the STCG drag), which compresses the more
+  // actionable post-tax + SPY comparison. Hiding it lets the y-axis
+  // auto-scale down to the realistic-account range. Default: visible.
+  // Hydrated from localStorage on mount.
+  const [showPreTax, setShowPreTax] = useState<boolean>(
+    () => readPrefs().showPreTax ?? true,
+  );
+  // Brush window indices. `undefined` = no brush selection (Recharts
+  // shows the full range). Resolved from saved dates once the curve
+  // arrives; persisted back to dates on every user drag.
+  const [brushStart, setBrushStart] = useState<number | undefined>(undefined);
+  const [brushEnd, setBrushEnd] = useState<number | undefined>(undefined);
+
+  // Resolve saved brush dates → indices once the curve dates load (and
+  // again if they change, e.g. a new retrain extends the series). If
+  // the saved dates are no longer present in the data, fall back to the
+  // nearest date on each side; if either fallback fails, clear the
+  // brush back to full range rather than show something wrong.
+  useEffect(() => {
+    const dates = curve?.dates ?? [];
+    if (dates.length === 0) return;
+    const prefs = readPrefs();
+    if (!prefs.brushStartDate || !prefs.brushEndDate) return;
+    const findIdx = (target: string): number | undefined => {
+      const exact = dates.indexOf(target);
+      if (exact >= 0) return exact;
+      // Nearest-by-string fallback (date strings sort lexically since
+      // they're ISO YYYY-MM-DD). Find first date >= target.
+      const idx = dates.findIndex((d) => d >= target);
+      return idx >= 0 ? idx : dates.length - 1;
+    };
+    const s = findIdx(prefs.brushStartDate);
+    const e = findIdx(prefs.brushEndDate);
+    if (s != null && e != null && e > s) {
+      setBrushStart(s);
+      setBrushEnd(e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curve?.dates]);
+
+  // Persist current prefs whenever any of them change. Brush window is
+  // stored as dates (anchored to the same points as the time series
+  // grows). Toggle is stored as boolean.
+  useEffect(() => {
+    try {
+      const dates = curve?.dates ?? [];
+      const prefs: EquityChartPrefs = {
+        showPreTax,
+        brushStartDate:
+          brushStart != null && brushStart >= 0 && brushStart < dates.length
+            ? dates[brushStart]
+            : undefined,
+        brushEndDate:
+          brushEnd != null && brushEnd >= 0 && brushEnd < dates.length
+            ? dates[brushEnd]
+            : undefined,
+      };
+      localStorage.setItem(EQUITY_CHART_PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      /* localStorage can throw in private mode / when quota is hit */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPreTax, brushStart, brushEnd, curve?.dates]);
+
+  // Reset everything back to defaults (full range, pre-tax visible) and
+  // wipe the persisted prefs so a subsequent refresh shows the same
+  // clean state.
+  const resetChart = () => {
+    setShowPreTax(true);
+    setBrushStart(undefined);
+    setBrushEnd(undefined);
+    try {
+      localStorage.removeItem(EQUITY_CHART_PREFS_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
+
   if (!curve || !curve.dates || curve.dates.length === 0) {
     return null;
   }
@@ -436,7 +543,23 @@ function EquityCurveChart({
         <div className="text-[11px] text-gray-500">
           starts at{' '}
           <span className="font-mono text-gray-300">{fmtMoney(startingCapital, currency)}</span> ·{' '}
-          <span className="text-emerald-400/70">pre-tax (dotted)</span>
+          {/* Click to hide/show the pre-tax dotted line. Greyed +
+              strikethrough = hidden; bright emerald = visible. Toggling
+              recomputes the y-axis auto-scale via the conditional Line
+              below. */}
+          <button
+            type="button"
+            onClick={() => setShowPreTax((v) => !v)}
+            className={`cursor-pointer transition-colors ${
+              showPreTax
+                ? 'text-emerald-400/70 hover:text-emerald-300'
+                : 'text-gray-500 line-through hover:text-gray-400'
+            }`}
+            title={showPreTax ? 'Hide pre-tax line (y-axis will rescale)' : 'Show pre-tax line'}
+            aria-pressed={showPreTax}
+          >
+            pre-tax (dotted)
+          </button>
           {hasPostTax ? (
             <>
               {' · '}<span className="text-emerald-400">post-tax (solid)</span>
@@ -452,6 +575,18 @@ function EquityCurveChart({
               {' · '}<span className="text-sky-400/70">{benchKey} post-LTCG</span>
             </>
           ) : null}
+          {/* Reset: clears the persisted toggle + brush window so the
+              chart returns to default (pre-tax visible, full date range).
+              Shown subtle by default, brightens on hover. */}
+          {' · '}
+          <button
+            type="button"
+            onClick={resetChart}
+            className="cursor-pointer text-gray-500 transition-colors hover:text-gray-300"
+            title="Reset chart to defaults (show pre-tax line, full date range)"
+          >
+            reset
+          </button>
         </div>
       </div>
       <div className="h-72 w-full">
@@ -480,17 +615,19 @@ function EquityCurveChart({
                 typeof v === 'number' ? fmtMoney(v, currency) : v
               }
             />
-            <Line
-              type="monotone"
-              dataKey="pre"
-              name="pre-tax"
-              stroke={CHART_GREEN}
-              strokeOpacity={0.55}
-              strokeDasharray="3 3"
-              strokeWidth={1.5}
-              dot={false}
-              isAnimationActive={false}
-            />
+            {showPreTax && (
+              <Line
+                type="monotone"
+                dataKey="pre"
+                name="pre-tax"
+                stroke={CHART_GREEN}
+                strokeOpacity={0.55}
+                strokeDasharray="3 3"
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+            )}
             {hasPostTax && (
               <Line
                 type="monotone"
@@ -535,7 +672,9 @@ function EquityCurveChart({
             )}
             {/* Brush: drag the handles below the chart to zoom into a date
                 range. Y-axis auto-scales to the selected window so vertical
-                detail isn't compressed by the full-history scale. */}
+                detail isn't compressed by the full-history scale.
+                Controlled by brushStart/brushEnd so the window survives
+                page reloads (persisted via localStorage as dates). */}
             <Brush
               dataKey="date"
               height={24}
@@ -543,6 +682,13 @@ function EquityCurveChart({
               fill="#0b1220"
               travellerWidth={8}
               tickFormatter={(v: string) => v.slice(0, 7)}
+              startIndex={brushStart}
+              endIndex={brushEnd}
+              onChange={(range: { startIndex?: number; endIndex?: number }) => {
+                if (range.startIndex == null || range.endIndex == null) return;
+                setBrushStart(range.startIndex);
+                setBrushEnd(range.endIndex);
+              }}
             />
           </LineChart>
         </ResponsiveContainer>
@@ -552,6 +698,294 @@ function EquityCurveChart({
 }
 
 const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// ---------------------------------------------------------------------------
+// MonthlyHistograms — two side-by-side histograms (Excess vs SPY, Strategy
+// return) computed from the same monthly_excess cells the heatmap consumes.
+//
+// Each histogram shows:
+//   - Bar = count of months in each ~1% bin
+//   - Mean (vertical solid line + label)
+//   - Median (vertical dashed line + label)
+//   - ±1σ band (dotted vertical lines flanking the mean)
+//   - Pareto stat: what % of total |value| comes from the most extreme 20%
+//     of months (fat-tailedness gauge — 80% = textbook Pareto; higher = even
+//     fatter tails, lower = more uniform)
+// Tooltip on each bar shows bin range + count.
+// ---------------------------------------------------------------------------
+
+type HistogramStats = {
+  n: number;
+  mean: number;
+  median: number;
+  std: number;
+  paretoShare: number; // top-20%-by-|x| share of total |x|
+  min: number;
+  max: number;
+};
+
+function computeStats(values: number[]): HistogramStats | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const mean = sorted.reduce((a, b) => a + b, 0) / n;
+  const median =
+    n % 2 === 1 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+  const variance =
+    n > 1 ? sorted.reduce((a, x) => a + (x - mean) ** 2, 0) / (n - 1) : 0;
+  const std = Math.sqrt(variance);
+  // Pareto: share of total |x| contributed by the top 20% of months by |x|.
+  // For a perfectly-uniform distribution this is exactly 20%; for a textbook
+  // Pareto 80/20 it's 80%. Anything above 50% signals fat-tailed outcomes
+  // (the headline excess/return is concentrated in a small number of months).
+  const absSorted = values.map(Math.abs).sort((a, b) => b - a);
+  const topN = Math.max(1, Math.ceil(absSorted.length * 0.2));
+  const totalAbs = absSorted.reduce((a, b) => a + b, 0);
+  const topAbs = absSorted.slice(0, topN).reduce((a, b) => a + b, 0);
+  const paretoShare = totalAbs > 0 ? topAbs / totalAbs : 0;
+  return {
+    n,
+    mean,
+    median,
+    std,
+    paretoShare,
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+  };
+}
+
+function buildHistogramBins(
+  values: number[],
+  binWidth: number,
+): { binCenter: number; count: number; binLo: number; binHi: number }[] {
+  if (values.length === 0) return [];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  // Snap bin boundaries to multiples of binWidth around zero so the
+  // histogram is symmetric and the zero line falls exactly on a bin edge
+  // (not inside a bin). This is what makes the Mean / Median reference
+  // lines visually align with the bar grid.
+  const lo = Math.floor(min / binWidth) * binWidth;
+  const hi = Math.ceil(max / binWidth) * binWidth;
+  const nBins = Math.max(1, Math.round((hi - lo) / binWidth));
+  const bins: { binCenter: number; count: number; binLo: number; binHi: number }[] = [];
+  for (let i = 0; i < nBins; i++) {
+    const binLo = lo + i * binWidth;
+    const binHi = binLo + binWidth;
+    bins.push({ binCenter: binLo + binWidth / 2, count: 0, binLo, binHi });
+  }
+  for (const v of values) {
+    // Right-open intervals [binLo, binHi); clamp the max value into the
+    // last bin so it doesn't fall off the end.
+    let idx = Math.floor((v - lo) / binWidth);
+    if (idx >= nBins) idx = nBins - 1;
+    if (idx < 0) idx = 0;
+    bins[idx].count += 1;
+  }
+  return bins;
+}
+
+function MonthlyHistograms({
+  cells,
+  benchKey,
+}: {
+  cells: StrictWfMonthlyExcessCell[];
+  benchKey: string;
+}) {
+  if (!cells || cells.length === 0) return null;
+
+  const excessValues = cells
+    .map((c) => c.excess_pct)
+    .filter((v): v is number => v != null && !Number.isNaN(v));
+  const strategyValues = cells
+    .map((c) => c.strategy_pct)
+    .filter((v): v is number => v != null && !Number.isNaN(v));
+
+  const excessStats = computeStats(excessValues);
+  const strategyStats = computeStats(strategyValues);
+  // 1% bins for both — fine-grained enough to see the shape, coarse
+  // enough not to look spiky on ~140 months of data.
+  const excessBins = buildHistogramBins(excessValues, 1);
+  const strategyBins = buildHistogramBins(strategyValues, 1);
+
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <HistogramCard
+        title={`Monthly excess vs ${benchKey} (%)`}
+        bins={excessBins}
+        stats={excessStats}
+        unit="%"
+        positiveTint
+      />
+      <HistogramCard
+        title="Monthly strategy return (%)"
+        bins={strategyBins}
+        stats={strategyStats}
+        unit="%"
+        positiveTint
+      />
+    </div>
+  );
+}
+
+function HistogramCard({
+  title,
+  bins,
+  stats,
+  unit,
+  positiveTint,
+}: {
+  title: string;
+  bins: { binCenter: number; count: number; binLo: number; binHi: number }[];
+  stats: HistogramStats | null;
+  unit: string;
+  positiveTint: boolean;
+}) {
+  if (!stats || bins.length === 0) return null;
+
+  // Color the bars by sign: emerald for ≥0, rose for <0. Matches the
+  // heatmap palette below, so the eye carries the same encoding down.
+  const data = bins.map((b) => ({
+    ...b,
+    label: `${b.binLo.toFixed(0)} to ${b.binHi.toFixed(0)}`,
+    fill: positiveTint && b.binCenter >= 0 ? '#10b981' : '#f43f5e',
+    fillOpacity: 0.55,
+  }));
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <div className="text-[11px] uppercase tracking-wider text-gray-500">{title}</div>
+        <div className="font-mono text-[10px] text-gray-500">n = {stats.n}</div>
+      </div>
+      {/* Stat strip — Mean, Median, σ, Pareto. Each value is mono so the
+          eye can scan the numbers; labels are uppercase-tracking-wider to
+          match the section headers elsewhere. */}
+      <div className="mb-2 grid grid-cols-4 gap-2 text-[10px]">
+        <Stat label="Mean" value={`${stats.mean >= 0 ? '+' : ''}${stats.mean.toFixed(2)}${unit}`} valueClass={stats.mean >= 0 ? 'text-emerald-400' : 'text-rose-400'} />
+        <Stat label="Median" value={`${stats.median >= 0 ? '+' : ''}${stats.median.toFixed(2)}${unit}`} valueClass={stats.median >= 0 ? 'text-emerald-400' : 'text-rose-400'} />
+        <Stat label="Std dev" value={`${stats.std.toFixed(2)}${unit}`} valueClass="text-gray-200" />
+        <Stat
+          label="Pareto"
+          value={`${(stats.paretoShare * 100).toFixed(0)}%`}
+          valueClass={stats.paretoShare >= 0.5 ? 'text-amber-400' : 'text-gray-200'}
+          title={`Share of total |value| contributed by the most extreme 20% of months. 20% = perfectly uniform · 80% = textbook Pareto 80/20 · higher = even fatter tails. Current: ${(stats.paretoShare * 100).toFixed(1)}% means the top ${Math.max(1, Math.ceil(stats.n * 0.2))} of ${stats.n} months account for ${(stats.paretoShare * 100).toFixed(0)}% of all the moves the strategy made.`}
+        />
+      </div>
+      <div className="h-44 w-full">
+        <ResponsiveContainer>
+          <BarChart data={data} margin={{ left: 4, right: 8, top: 4, bottom: 4 }}>
+            <CartesianGrid stroke="#1f2937" vertical={false} />
+            <XAxis
+              dataKey="binCenter"
+              type="number"
+              domain={[bins[0].binLo, bins[bins.length - 1].binHi]}
+              tick={{ fontSize: 10, fill: '#6b7280' }}
+              tickFormatter={(v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(0)}`}
+              ticks={[
+                bins[0].binLo,
+                bins[0].binLo + (bins[bins.length - 1].binHi - bins[0].binLo) / 4,
+                0,
+                bins[0].binLo + (3 * (bins[bins.length - 1].binHi - bins[0].binLo)) / 4,
+                bins[bins.length - 1].binHi,
+              ].filter((v, i, arr) => i === 0 || v !== arr[i - 1])}
+              allowDataOverflow={false}
+            />
+            <YAxis
+              tick={{ fontSize: 10, fill: '#6b7280' }}
+              width={28}
+              allowDecimals={false}
+            />
+            <Tooltip
+              contentStyle={{
+                fontSize: 11,
+                backgroundColor: '#0b1220',
+                border: '1px solid #1f2937',
+                color: '#e5e7eb',
+              }}
+              labelFormatter={(_v: number, payload: { payload?: { binLo?: number; binHi?: number } }[]) => {
+                const p = payload && payload[0]?.payload;
+                if (!p || p.binLo == null || p.binHi == null) return '';
+                return `Bin ${p.binLo >= 0 ? '+' : ''}${p.binLo.toFixed(0)}${unit} to ${p.binHi >= 0 ? '+' : ''}${p.binHi.toFixed(0)}${unit}`;
+              }}
+              formatter={(v: number | string) => [v, 'Months']}
+            />
+            {/* Mean line (solid). Always rendered so the eye can compare
+                mean-vs-median at a glance (right-skew = mean > median). */}
+            <ReferenceLine
+              x={stats.mean}
+              stroke="#e5e7eb"
+              strokeWidth={1.5}
+              ifOverflow="extendDomain"
+            >
+              <Label value="μ" position="top" fill="#e5e7eb" fontSize={10} />
+            </ReferenceLine>
+            {/* Median line (dashed). Coincides with mean for symmetric
+                distributions; diverges visibly when skewed. */}
+            <ReferenceLine
+              x={stats.median}
+              stroke="#fbbf24"
+              strokeDasharray="3 3"
+              strokeWidth={1.5}
+              ifOverflow="extendDomain"
+            >
+              <Label value="med" position="top" fill="#fbbf24" fontSize={10} />
+            </ReferenceLine>
+            {/* ±1σ band (dotted). Encloses ~68% of data for a normal
+                distribution — visual gauge of how wide the tails really
+                are vs how wide a Gaussian would predict. */}
+            <ReferenceLine
+              x={stats.mean - stats.std}
+              stroke="#9ca3af"
+              strokeDasharray="2 4"
+              strokeWidth={1}
+              ifOverflow="extendDomain"
+            >
+              <Label value="−1σ" position="top" fill="#9ca3af" fontSize={9} />
+            </ReferenceLine>
+            <ReferenceLine
+              x={stats.mean + stats.std}
+              stroke="#9ca3af"
+              strokeDasharray="2 4"
+              strokeWidth={1}
+              ifOverflow="extendDomain"
+            >
+              <Label value="+1σ" position="top" fill="#9ca3af" fontSize={9} />
+            </ReferenceLine>
+            {/* Per-bar coloring via <Cell> children: emerald for the
+                positive half of the distribution, rose for the negative.
+                Matches the heatmap palette below so the eye carries the
+                same encoding down to the calendar grid. */}
+            <Bar dataKey="count" isAnimationActive={false} fillOpacity={0.7}>
+              {data.map((d, idx) => (
+                <Cell key={idx} fill={d.fill} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  valueClass,
+  title,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  title?: string;
+}) {
+  return (
+    <div className="rounded border border-gray-800 bg-gray-900/40 px-2 py-1" title={title}>
+      <div className="text-[9px] uppercase tracking-wider text-gray-500">{label}</div>
+      <div className={`font-mono text-xs ${valueClass ?? 'text-gray-200'}`}>{value}</div>
+    </div>
+  );
+}
 
 type HeatmapMode = 'excess' | 'strategy';
 
@@ -753,6 +1187,18 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
             <th className="px-3 py-2 text-right">{benchKey}</th>
             <th
               className="px-3 py-2 text-right"
+              title={`${benchKey} intra-year max drawdown over the same window the strategy traded. Companion to the Max DD column — surfaces how stressful the year was for the benchmark, which is when the strategy's defensive alpha has the most room to operate.`}
+            >
+              {benchKey} MaxDD
+            </th>
+            <th
+              className="px-3 py-2 text-right"
+              title="VIX peak (intraday high) during the strategy's trading window for the year. The Wall Street 'fear gauge' — higher peaks correlate with high-excess years."
+            >
+              VIX peak
+            </th>
+            <th
+              className="px-3 py-2 text-right"
               title={`After-tax strategy return − ${benchKey} pre-tax return. ${benchKey} LTCG is intentionally ignored here so the comparison is "what the strategy actually keeps" vs "what the benchmark prints". Populated only at end of calendar year (when after-tax is available).`}
             >
               Excess (a/t)
@@ -784,6 +1230,36 @@ function YearTable({ years, benchKey }: { years: StrictWfYearPoint[]; benchKey: 
               </td>
               <td className={`px-3 py-2 text-right font-mono ${(y.benchmark_return_pct ?? 0) >= 0 ? 'text-sky-400' : 'text-rose-400'}`}>
                 {y.benchmark_return_pct != null ? pctFmt(y.benchmark_return_pct, true) : '—'}
+              </td>
+              {/* SPY MaxDD: dim text by default; redden when deep (≥10%)
+                  so the eye lands on the stress years. Signed positive. */}
+              <td
+                className={`px-3 py-2 text-right font-mono ${
+                  y.benchmark_max_dd_pct == null
+                    ? 'text-gray-500'
+                    : y.benchmark_max_dd_pct >= 10
+                      ? 'text-rose-400/80'
+                      : 'text-gray-400'
+                }`}
+              >
+                {y.benchmark_max_dd_pct != null
+                  ? pctFmt(y.benchmark_max_dd_pct, false, 1)
+                  : '—'}
+              </td>
+              {/* VIX peak: amber when peak ≥30 (real stress), red ≥50
+                  (crash-level), gray otherwise. */}
+              <td
+                className={`px-3 py-2 text-right font-mono ${
+                  y.vix_peak == null
+                    ? 'text-gray-500'
+                    : y.vix_peak >= 50
+                      ? 'text-rose-400'
+                      : y.vix_peak >= 30
+                        ? 'text-amber-400'
+                        : 'text-gray-400'
+                }`}
+              >
+                {y.vix_peak != null ? y.vix_peak.toFixed(1) : '—'}
               </td>
               {(() => {
                 // After-tax excess: strategy_after_tax − benchmark (pre-tax).

@@ -970,7 +970,13 @@ _STRICT_WF_PATHS = {
         "preds": "data/processed/walkforward_10yr_strict/predictions.sqlite",
         "paper": "data/processed/walkforward_10yr_strict/analysis_live.sqlite",
         "commission": "ibkr_lite",
-        "expected_retrains": 132,  # 11 years × 12 monthly retrains
+        # Monthly retrains expected between the WF's --start and --end.
+        # 148 = Jan 2014 → Apr 2026 inclusive (12 years 4 months). Was
+        # 132 (Jan 2014 → Dec 2024) under the original 10-year program;
+        # the extension to Apr 2026 added 16 retrains. **Update this if
+        # the WF's --end flag changes** — it drives the progress bar,
+        # the X/Y display, the ETA, and the running-state heuristic.
+        "expected_retrains": 148,
     },
 }
 
@@ -1129,6 +1135,71 @@ def _benchmark_year_returns_pct_in_window(
         last_close = float(rows[-1][1])
         if first_close > 0:
             out[int(year)] = (last_close / first_close - 1) * 100
+    return out
+
+
+def _benchmark_year_maxdd_pct_in_window(
+    duck: duckdb.DuckDBPyConnection,
+    symbol: str,
+    year_window: dict[int, tuple[object, object]],
+) -> dict[int, float]:
+    """Per-year benchmark max drawdown (peak-to-trough %), restricted to
+    the strategy's actual trading window for each year. Companion to
+    _benchmark_year_returns_pct_in_window — uses the same SPY close
+    series so it exposes the same window the user already sees in the
+    SPY return column. Returned values are signed positive (e.g. 19.2
+    means a 19.2% drawdown).
+    """
+    out: dict[int, float] = {}
+    for year, (first_d, last_d) in year_window.items():
+        rows = duck.execute(
+            "SELECT bar_date, close FROM ohlcv_daily "
+            "WHERE symbol = ? AND bar_date BETWEEN ? AND ? ORDER BY bar_date",
+            [symbol, first_d, last_d],
+        ).fetchall()
+        if len(rows) < 2:
+            continue
+        peak = 0.0
+        dd = 0.0
+        for _, c in rows:
+            c = float(c)
+            if c > peak:
+                peak = c
+            if peak > 0:
+                dd = max(dd, (peak - c) / peak)
+        out[int(year)] = dd * 100
+    return out
+
+
+def _vix_peak_by_year(
+    year_window: dict[int, tuple[object, object]],
+    vix_path: str = "data/raw/vix_daily.parquet",
+) -> dict[int, float]:
+    """Per-year VIX peak (intraday high) restricted to the same trading
+    window as the strategy. Reads from a standalone parquet so this
+    function NEVER touches market.duckdb — keeps the live walkforward
+    backtest's DuckDB lock uncontended.
+
+    Returns {} silently if the parquet is missing or unreadable; the
+    column then renders as em-dash on the dashboard.
+    """
+    import os
+    if not os.path.exists(vix_path):
+        return {}
+    try:
+        df = pd.read_parquet(vix_path)
+    except Exception:
+        return {}
+    if df.empty or "bar_date" not in df.columns or "high" not in df.columns:
+        return {}
+    # Normalize bar_date to plain date (matches year_window keys).
+    df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
+    out: dict[int, float] = {}
+    for year, (first_d, last_d) in year_window.items():
+        mask = (df["bar_date"] >= first_d) & (df["bar_date"] <= last_d)
+        sub = df.loc[mask, "high"]
+        if not sub.empty:
+            out[int(year)] = float(sub.max())
     return out
 
 
@@ -1793,11 +1864,22 @@ def get_strict_wf_status(
     bench_by_year = _benchmark_year_returns_pct_in_window(
         duck, bench_sym, year_window
     )
+    # Companion metrics for the "stress context" columns on the years
+    # table: SPY's own intra-window drawdown and VIX peak. Both use the
+    # same year_window as the SPY return so all four columns share an
+    # apples-to-apples date span. VIX reads from a standalone parquet —
+    # zero contact with market.duckdb (the live WF holds that lock).
+    bench_dd_by_year = _benchmark_year_maxdd_pct_in_window(
+        duck, bench_sym, year_window
+    )
+    vix_peak_by_year = _vix_peak_by_year(year_window)
     for y in years:
         b = bench_by_year.get(y.year)
         y.benchmark_return_pct = b
         if b is not None:
             y.excess_pct = y.strategy_return_pct - b
+        y.benchmark_max_dd_pct = bench_dd_by_year.get(y.year)
+        y.vix_peak = vix_peak_by_year.get(y.year)
 
     # Tax-adjusted strategy return for EVERY year (in-progress years
     # are taxed as if the strategy closes today). Frontend uses this

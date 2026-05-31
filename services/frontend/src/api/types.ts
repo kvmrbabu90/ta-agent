@@ -172,6 +172,12 @@ export interface StrictWfYearPoint {
   // Mid-year rows return null — the UI renders an em-dash.
   strategy_return_after_tax_pct: number | null;
   benchmark_return_pct: number | null;
+  // SPY intra-window max drawdown for the same year window. Companion
+  // to max_dd_pct (strategy). Signed positive (19.0 = 19% drawdown).
+  benchmark_max_dd_pct: number | null;
+  // VIX peak (intraday high) during the strategy's window for the year.
+  // Null if VIX data is missing for the window.
+  vix_peak: number | null;
   excess_pct: number | null;
   sharpe: number | null;
   max_dd_pct: number | null;
@@ -322,6 +328,8 @@ export interface PaperPosition {
   planned_exit_date: string | null;
   // Stop-loss level — position closes here if hit. Null if stop disabled.
   stop_level: number | null;
+  // Number of open lots (entry orders) aggregated into this row.
+  lot_count: number;
 }
 
 export interface PaperTrade {
@@ -334,6 +342,9 @@ export interface PaperTrade {
   fill_price: number;
   cash_delta: number;
   realized_pnl: number | null;
+  // Opening lot's entry date / fill price for close trades. Null for opens.
+  entry_date: string | null;
+  entry_price: number | null;
 }
 
 export interface PaperBenchmarkPoint {

@@ -219,6 +219,10 @@ class PaperPosition(_BaseResponse):
     # across lots: the HIGHEST stop level across all of this symbol's
     # active lots (the tightest stop — the most conservative for a long).
     stop_level: float | None = None
+    # Number of distinct open lots (entry orders) aggregated into this row.
+    # With overlapping portfolios a symbol is often rebought across several
+    # trading days; this is how many of those legs are still held.
+    lot_count: int = 1
 
 
 class PaperTrade(_BaseResponse):
@@ -230,6 +234,11 @@ class PaperTrade(_BaseResponse):
     fill_price: float
     cash_delta: float
     realized_pnl: float | None = None
+    # For close trades, the opening lot's entry date and fill price (joined
+    # on lot_id). Null for open trades and for legacy rows with no matching
+    # open leg.
+    entry_date: date | None = None
+    entry_price: float | None = None
 
 
 class PaperBenchmarkPoint(_BaseResponse):
@@ -393,6 +402,19 @@ class StrictWfYearPoint(_BaseResponse):
     # US capital gains.
     strategy_return_after_tax_pct: float | None = None
     benchmark_return_pct: float | None = None
+    # Benchmark (SPY) max intra-year drawdown for the same window the
+    # strategy traded. Year-internal peak-to-trough %, signed positive
+    # (e.g. 19.0 means SPY drew down 19%). Companion to the strategy
+    # max_dd_pct column — exposes "how stressful was this year for the
+    # benchmark" so the reader can intuit when the strategy's defensive
+    # alpha had room to operate.
+    benchmark_max_dd_pct: float | None = None
+    # Peak VIX (intraday high) during the strategy's actual trading
+    # window for the year. Sourced from a standalone parquet
+    # (data/raw/vix_daily.parquet); never touches market.duckdb. None if
+    # the VIX series is missing or the year window has no overlapping
+    # VIX bars.
+    vix_peak: float | None = None
     excess_pct: float | None = None
     sharpe: float | None = None
     max_dd_pct: float | None = None
