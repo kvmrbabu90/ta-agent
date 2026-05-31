@@ -1,4 +1,4 @@
-import { Activity, LayoutDashboard, LineChart, Wallet, Settings, RefreshCw, Radio, Cable } from 'lucide-react';
+import { Activity, LayoutDashboard, LineChart, Wallet, Settings, RefreshCw, Radio, Cable, Zap } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSystemStatus } from '@/hooks/useSystemStatus';
@@ -141,6 +141,10 @@ export function Layout({ children }: LayoutProps) {
               <NavLink to="/live-ibkr" className={navLinkClass}>
                 <Cable className="h-4 w-4" />
                 Live IBKR
+              </NavLink>
+              <NavLink to="/live-alpaca" className={navLinkClass}>
+                <Zap className="h-4 w-4" />
+                Live Alpaca
               </NavLink>
               <NavLink to="/settings" className={navLinkClass}>
                 <Settings className="h-4 w-4" />
