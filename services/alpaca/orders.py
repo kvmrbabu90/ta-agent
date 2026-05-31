@@ -28,8 +28,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
+from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, StopLossRequest
 
 from . import db
 from .connection import KuberaAlpaca, Mode
@@ -192,12 +192,35 @@ def approve_and_submit(signal_ids: list[int], *, approved_by: str,
                     continue
 
             side = OrderSide.BUY if sig.intended_action == "OPEN_LONG" else OrderSide.SELL
-            req = MarketOrderRequest(
-                symbol=sig.symbol,
-                qty=sig.qty,
-                side=side,
-                time_in_force=TimeInForce.DAY,
+
+            # For OPEN_LONG with a stop_pct, submit as an OTO (One-Triggers-Other)
+            # bracket so the entry + protective stop submit atomically. Alpaca
+            # rejects "place entry, then place opposite stop" as a wash-trade
+            # detection (code 40310000), so this is the only correct shape.
+            # CLOSE_LONG (or OPEN_LONG without a stop) goes as a plain MarketOrder.
+            use_bracket = (
+                sig.intended_action == "OPEN_LONG"
+                and tgt > 0
+                and cfg.stop_pct > 0
             )
+            if use_bracket:
+                stop_price = round(tgt * (1.0 - cfg.stop_pct), 2)
+                req = MarketOrderRequest(
+                    symbol=sig.symbol,
+                    qty=sig.qty,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                    order_class=OrderClass.OTO,
+                    stop_loss=StopLossRequest(stop_price=stop_price),
+                )
+            else:
+                stop_price = None
+                req = MarketOrderRequest(
+                    symbol=sig.symbol,
+                    qty=sig.qty,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                )
             try:
                 order = client.submit_order(order_data=req)
             except Exception as e:
@@ -208,23 +231,12 @@ def approve_and_submit(signal_ids: list[int], *, approved_by: str,
             oid = str(order.id)
             _mark(con, sid, "PLACED", alpaca_order_id=oid, approved_by=approved_by)
             out[sid] = {"status": "PLACED", "reason": None, "alpaca_order_id": oid}
-            log.info("placed %s %s qty=%g order_id=%s", side.value, sig.symbol, sig.qty, oid)
-
-            # Best-effort stop, mirrors the IBKR engine.
-            if sig.intended_action == "OPEN_LONG" and tgt > 0 and cfg.stop_pct > 0:
-                stop_price = round(tgt * (1.0 - cfg.stop_pct), 2)
-                stop_req = StopOrderRequest(
-                    symbol=sig.symbol,
-                    qty=sig.qty,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,
-                    stop_price=stop_price,
-                )
-                try:
-                    client.submit_order(order_data=stop_req)
-                    log.info("placed STOP SELL %s qty=%g stop=$%.2f", sig.symbol, sig.qty, stop_price)
-                except Exception as e:
-                    log.warning("stop order failed for %s: %s", sig.symbol, e)
+            if use_bracket:
+                log.info("placed %s %s qty=%g order_id=%s OTO stop=$%.2f",
+                         side.value, sig.symbol, sig.qty, oid, stop_price)
+            else:
+                log.info("placed %s %s qty=%g order_id=%s",
+                         side.value, sig.symbol, sig.qty, oid)
 
         con.commit()
     finally:
