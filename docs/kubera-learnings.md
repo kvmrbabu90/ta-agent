@@ -4,11 +4,41 @@
 
 **Strict walk-forward backtest, SP500 universe, Jan 2014 → May 2026 (149 monthly retrains)**
 
-Generated 2026-05-31T06:26:11Z.
+Generated 2026-05-31T06:26:11Z. **Corrected 2026-06-01** for the phantom-exit
+simulator bug — see §11 below.
 
 Per-month entries contain: macro context (2014-2021) OR live outlook I gave (2022-2026), 
 the actuals (strategy/SPY/excess/Sharpe/vol + top-5 holdings + best-3/worst-3 days), 
 and key learnings. Final section: cross-cutting synthesis with the methodology insights.
+
+> ## ⚠️ Numbers correction — 2026-06-01
+>
+> The simulator that produced the per-year totals in §§8-10 originally
+> contained a stop-loss accounting bug: when a lot's computed stop level
+> ended up *above* its entry price (gap-down through prior support),
+> the engine recorded an exit at `stop_level` whenever today's close
+> was ≤ stop_level — even when the close had never touched stop_level
+> intraday. This produced phantom-exit P&L at prices the market never
+> actually traded.
+>
+> The bug was discovered on 2026-06-01 by inspecting an INTC trade on
+> Kubera's first live-trading day (see §11 for the audit). Fix shipped
+> simultaneously to both the simulator (`packages/paper_trading/engine.py`)
+> and the live Alpaca engine (`services/alpaca/engine.py`) — broken-support
+> lots now run to the 5-day expiry exit without protection rather than
+> recording a phantom stop fire.
+>
+> The per-month entries (Jan 2014 → May 2026) describe what the model
+> *picked*, which is unchanged. The per-year and cumulative *P&L* numbers
+> at the year-header lines and in §§7-10 are the **corrected** figures.
+> Where the original (inflated) numbers were quoted in prose, the
+> correction is shown inline as `OLD → NEW`.
+>
+> Headline impact: cumulative gain reduced from **17,240% (173x, +49% ann)
+> → 4,157% (42.6x, +33% ann)**. The strategy still beats SPY in 11 of 13
+> years (vs 12/13 before) by a wide margin; 2015 became a small net loss
+> and 2020 a near-tie with SPY. The structural-alpha thesis survives —
+> see §11 for the apples-to-apples comparison.
 
 ---
 
@@ -28,6 +58,8 @@ and key learnings. Final section: cross-cutting synthesis with the methodology i
 - [2025](#2025) LIVE OUTLOOKS
 - [2026](#2026) FINAL PARTIAL
 - [Cross-cutting synthesis (methodology insights)](#cross-cutting-synthesis)
+  - §§1-10: original synthesis (qualitative claims preserved; dollar magnitudes in 7-10 are pre-correction)
+  - **§11: Phantom-exit discovery + apples-to-apples corrected numbers (added 2026-06-01)**
 
 ---
 
@@ -2089,7 +2121,7 @@ A subtlety in the dashboard: the a/t cumulative multiple drops every January 1 b
 Examples:
 - Jan 2023: a/t cum dropped 9.96× → 9.59× (-3.7% on a small 2022 gain)
 - Jan 2024: a/t cum dropped 11.74× → 9.96× (-15% on the 2023 +58% gross)
-- Jan 2026: a/t cum dropped 46.55× → 38.90× (-16% on the 2025 +105% gross)
+- Jan 2026: a/t cum dropped 46.55× → 38.90× (-16% on the 2025 +105% gross) `[OLD pre-correction; corrected 2025 = +61% gross — see §11]`
 
 **Read the a/t cum line as a "saw-tooth" curve with annual resets, NOT as a clean exponential.** The pre-tax cum (dotted line on the equity chart) is the true compounding picture.
 
@@ -2126,6 +2158,11 @@ The strategy's excess scales non-linearly with the volatility regime:
 
 The clearest validation of the structural-alpha thesis is the OOS extension result. The model was trained on data through Dec 2024 (132 retrains). The 17-month extension Jan 2025 → May 2026 used data the Optuna tuner had never seen during hyperparameter selection.
 
+`[Note 2026-06-01: pre-correction monthly hit-rate / monthly-excess figures shown
+in this table reflect the simulator's old phantom-exit accounting. The
+qualitative claim — OOS performance ≥ in-sample — survives the correction.
+Yearly totals in the corrected §11 below are the apples-to-apples reference.]`
+
 | Metric | In-sample (2014-2024) | OOS (Jan 2025 - May 2026) |
 |---|---|---|
 | Months positive excess | 119/132 (90%) | **14/17 (82.4%)** |
@@ -2133,7 +2170,7 @@ The clearest validation of the structural-alpha thesis is the OOS extension resu
 | Best month a/t excess | +10.01% (Nov 2023) | **+18.01% (Mar 2026)** |
 | Worst OOS month a/t excess | n/a | **−4.39% (May 2026)** |
 | Best single-day excess | +7.83% (Sep 11 2025) | **+11.86% (Mar 5 2026)** |
-| Best year a/t excess | +37.12% (2022) | **+55.50% (2025)** |
+| Best year a/t excess | +37.12% (2022) [`OLD`] / **+35.6% (2016) [`CORRECTED`]** | **+55.50% (2025) [`OLD`] / +24.9% (2025) [`CORRECTED`]** |
 
 **The OOS performance is still *better* than the in-sample performance.** Even with May 2026 added (the first sub-1% month of the OOS extension and a −4.39% alpha print), the OOS hit rate and mean monthly excess both clear the in-sample baseline. This is the opposite of overfitting. The model genuinely encoded structural alpha that reproduces in entirely unseen data, with the expected within-distribution underperformance in known weak-spot regimes (low-dispersion bull tapes — May 2026 being the cleanest example).
 
@@ -2155,16 +2192,85 @@ The clearest validation of the structural-alpha thesis is the OOS extension resu
 
 8. **Do extend the backtest periodically.** The 2024 → 2026 extension produced more methodology insight than any prior period. Re-running with a fresh 6-12 months of OOS data every year is cheap (1 day of compute) and validates that the structural alpha hasn't decayed.
 
-9. **Do NOT promise 50%+ annualized returns to anyone in marketing materials.** The 12-year-4-month program annualized 49.93% pre-tax / 34.91% a/t — but this includes the 2025 +105% gross outlier. Stripped of 2025, the program annualizes closer to 38% pre-tax / 27% a/t — still extraordinary, more defensible, and less likely to disappoint live.
+9. **Do NOT promise 50%+ annualized returns to anyone in marketing materials.** `[ORIGINAL: 49.93% pre-tax / 34.91% a/t]` **Corrected (2026-06-01): the 12y-5m program annualizes 33.4% pre-tax / 23.4% a/t after removing the phantom-exit artifact.** 2025 was still the standout year (+61% gross, was +105%). Stripped of 2025, the program annualizes closer to 28% pre-tax / 20% a/t — still extraordinary, more defensible. Don't even consider quoting the pre-correction 49.93% to anyone external — it's literally not true.
 
 10. **Do read the failures harder than the wins.** The 5 worst miss-months (Apr 2024 PSKY no-catalyst, Oct 2023 KEY+cruises, May 2024 SMCI miss, Nov 2022 cyclical-drag, Jan 2026 Mag-7 miss) all share a structural feature: **the model held a concentrated bet that did NOT have a catalyst land in the 5-day window.** That's the failure mode — and it's the price paid for the wins. Understanding it deeply is the difference between disciplined deployment and panic-exiting after a -3% month.
 
 ---
 
+### 11. The phantom-exit discovery — apples-to-apples corrected numbers
+
+**Discovery date:** 2026-06-01 (Kubera's first scheduled live trading day on Alpaca paper).
+
+**How we found it.** On Monday morning the Paper Trade dashboard showed an INTC lot bought at $109.44, then closed "STOP CLOSE" at $118.58 — booking a +$283 profit. That's structurally impossible: a SELL stop sits BELOW current price; if it triggers, it triggers on a *down-move*. The +$9.14/share gain on a stop-out doesn't happen in any real market.
+
+The mechanism: INTC closed Friday May 29 at $125.01. The 3-day rolling-low stop computed off W/Th/F lows was $118.58. INTC gapped down at Monday's open to $109.44 — below the stop level. The simulator's stop-evaluation code says: "if today's close ≤ stop_level, exit at stop_level." Today's close was $110.64, which is ≤ $118.58, so the simulator recorded an exit at $118.58 — a price the market never touched. The lot showed a phantom +$283 profit.
+
+In any real market the stop would have either (a) been rejected at submission because Alpaca won't accept a SELL stop above current price, or (b) been disabled because there's no support to revert *to* — the stock is already below the support level the strategy is trying to play.
+
+**Audit of the 12.5-year WF.** Direct query against the simulator's `paper_trades` table comparing every stop-out's exit price to its entry price:
+
+| Metric | Value |
+|---|---|
+| Stop-fires where stop_price > entry_price | **860 events** |
+| As % of all 6,752 stops | **12.74%** |
+| Cumulative phantom P&L | **+$36,890** |
+| As % of total program realized P&L ($194,594) | **18.96%** |
+| Worst-affected year (2015) | **59.4% of year's P&L** was the artifact |
+| Other heavy years | 2022 (45%), 2020 (22%), 2025 (21%), 2023 (21%) |
+
+**The compounding multiplier.** The +$36,890 / 19% figure is the *flat* phantom alpha, but in a compounding strategy each phantom dollar earned in 2015 was reinvested as base capital in 2016, which then earned more phantom dollars on its larger base, and so on. Over 12.5 years of compounding, the cumulative impact is much larger than the flat number suggests.
+
+**The fix.** Both surfaces patched 2026-06-01:
+- `packages/paper_trading/engine.py` — at lot open, if `stop_level >= entry_price` the lot's stop is disabled (`None`). The lot then runs to the 5-day expiry exit and records the actual close price, not a phantom one.
+- `services/alpaca/engine.py` — three guard points (pre-open submission, post-open stop arming, post-close stop refresh) refuse to enter or arm a stop when the rolling-low is at or above current price. Uses Alpaca's authoritative `get_open_position().current_price` as ground truth.
+
+Both surfaces now produce identical accounting on the same predictions.
+
+**Apples-to-apples comparison.** Same WF predictions, same picks, same days — only the stop-exit accounting differs.
+
+| Year | Strategy OLD | Strategy NEW | SPY | Excess NEW |
+|---|---|---|---|---|
+| 2014 | +38.15% | **+33.97%** | +14.56% | +19.41% |
+| 2015 | +10.66% | **−3.69%** ⚠️ | +1.29% | −4.98% |
+| 2016 | +78.96% | **+70.26%** | +13.59% | +56.67% |
+| 2017 | +42.10% | **+31.00%** | +20.78% | +10.22% |
+| 2018 | +43.00% | **+25.62%** | −5.25% | +30.87% |
+| 2019 | +55.04% | **+45.30%** | +31.09% | +14.22% |
+| 2020 | +50.96% | **+17.39%** ⚠️ | +17.24% | +0.15% |
+| 2021 | +55.40% | **+54.70%** | +30.51% | +24.19% |
+| 2022 | +26.39% | **+7.95%** | −18.65% | +26.60% |
+| 2023 | +58.52% | **+41.31%** | +26.71% | +14.60% |
+| 2024 | +66.24% | **+51.32%** | +25.59% | +25.73% |
+| 2025 | +105.01% | **+61.28%** | +18.01% | +43.27% |
+| 2026 (partial, Jan-May) | +25.60% | **+19.86%** | +11.03% | +8.84% |
+| **Cumulative** | **+17,240% (173x, +49% ann)** | **+4,157% (42.6x, +33.4% ann)** | +413% (5.1x, +13.4% ann) | — |
+
+**What changed substantively:**
+- **2015 became a net loss** (−3.7% strategy vs +1.3% SPY = −5pp alpha). 59% of the previous +10.66% was phantom.
+- **2020 became a near-tie with SPY** (+0.15% excess). The COVID year saw many gap-downs that produced phantom exits at "stops"; without those, the model only matched the index.
+- **Cumulative dropped from 173x → 42.6x**, ann return from +49% → +33.4%/yr. Both still extraordinary; the corrected ann return is 2.5× SPY.
+
+**What did NOT change:**
+- **The picks the model made are identical.** The simulator bug was in the accounting of stop exits, not in the prediction pipeline. Every monthly "what did the strategy do" entry in this doc still describes what actually was held.
+- **The strategy still beats SPY in 11 of 13 years** (vs 12/13 before). The two flips are 2015 (lose to SPY) and 2020 (tie SPY) — both years that previously had 22-59% of their P&L from the bug.
+- **The OOS extension (2025-2026) still outperforms in-sample on both hit rate and mean monthly excess.** The structural-alpha claim survives.
+- **The qualitative monthly insights — TTD Mar 2026, ON Semi Sep 2025, the Mag-7 structural underweight, the 5-day catalyst decay, the bull-cap-busted months — are all about what the model picks and when, not how the simulator accounts for stops. Unchanged.**
+- **The +18% Mar 2026 OOS print** (Kubera's biggest single-month live result) — re-verified after the fix: the lot exits in that month were largely *expiry* closes, not stops, so the corrected number is close to the original. The +$11.86/day single-day excess on Mar 5 2026 stands.
+
+**Implications for live deployment:**
+- The realistic forward expectation drops from "the strategy historically did +49%/yr" to "the strategy historically did +33-36%/yr after honest accounting." Still 2.5× SPY ann.
+- The drawdown profile is worse than originally shown: 2020 MaxDD was 30.9% (corrected) vs 19.2% (original). Plan for 30%+ drawdowns in stress regimes.
+- 2015-style losing years are part of the distribution. The strategy can have flat-or-down years; the May 2026 underperform was a fingerprint of this class of regime even before the correction surfaced.
+- Live targeting should be calibrated to corrected numbers, not original. A first-year live return of +20-30% would be on-trend; +50% would be a positive surprise relative to *honest* expectations.
+
+**Process learning:** Both surfaces (simulator + live engine) were independently developed against the same spec ("stop at rolling-low × 0.997"), but the simulator faithfully implemented a spec that was *incomplete* (it didn't address the broken-support case), while the live engine had to be forced to confront it by Alpaca's rejection rules. The discrepancy only became visible when both were running side-by-side. **Lesson: every backtest needs at least one paired live shadow run, even for one week, to catch this class of bug before scaling.** Kubera's live launch caught the bug on day 1 — at $200k paper, not at $1M live.
+
+
 ## End of learnings document
 
-149 monthly retrains documented. Final cumulative state captured at retrain 149 (May 29, 2026). The May 2026 month was added after the original 148-retrain freeze and is the first documented sub-1% month of the 2026 OOS extension — see the May 2026 section above for the detailed failure-mode analysis.
+149 monthly retrains documented. Final cumulative state captured at retrain 149 (May 29, 2026). The May 2026 month was added after the original 148-retrain freeze. The phantom-exit simulator bug was discovered + fixed on 2026-06-01 — see §11 above for the apples-to-apples corrected numbers (cumulative ann return 33.4%, down from the pre-correction 49%).
 
-Re-generate this file by running `gen_learnings.py` after future extensions.
+Re-generate this file by running `gen_learnings.py` after future extensions. Be sure to use the post-correction simulator code (`packages/paper_trading/engine.py` from commit `881dbb3` or later).
 
-**Use this document as the canonical methodology reference for any future trading-system decisions on this strategy.**
+**Use this document as the canonical methodology reference for any future trading-system decisions on this strategy.** Where pre-correction numbers appear in the per-month entries (anything before the §11 cutover), the qualitative claims (model behavior, picks, key learnings) are unchanged but the dollar magnitudes should be read as upper bounds — the corrected magnitudes are roughly 50-80% of the printed numbers, with year-2015 going from a small win to a small loss and year-2020 from a strong win to a tie.
