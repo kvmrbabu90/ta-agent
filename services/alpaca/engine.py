@@ -532,6 +532,7 @@ def daily_open_run(wrapper) -> str:
     atrs: dict[str, float] = {}
     last_prices: dict[str, float] = {}
     stop_prices: dict[str, float] = {}
+    skipped_broken_support: list[str] = []
     for sym, score in picks:
         b = bars.get(sym, [])
         if len(b) < ATR_LOOKBACK + 1:
@@ -546,6 +547,29 @@ def daily_open_run(wrapper) -> str:
         if last_price <= 0:
             log.warning("skip %s: bad last_price=%s", sym, last_price)
             continue
+        stop_price = _rolling_low_stop(b, SUPPORT_LOOKBACK, STOP_BUFFER_PCT) or 0.0
+
+        # BROKEN-SUPPORT GUARD. When the prior 3-day rolling low is at or
+        # above today's reference price, the stock has gapped down through
+        # its support — the mean-reversion thesis fundamentally doesn't
+        # apply (price is below the level you'd reverte TO), and there's
+        # no valid place to put a protective sell-stop (it would be above
+        # current price, which Alpaca rejects).
+        #
+        # Refuse to enter. The slice deploys less capital that day rather
+        # than enter a position we cannot protect. Analysis of the 12.5y
+        # WF backtest shows ~13% of stop-outs were this anomalous
+        # "stop above entry" case, accounting for ~19% of historical
+        # realized P&L — phantom alpha that does not reproduce live.
+        if stop_price >= last_price:
+            log.warning(
+                "skip %s (broken support): stop $%.2f >= ref $%.2f "
+                "(gap-down below 3-day low); refusing to enter",
+                sym, stop_price, last_price,
+            )
+            skipped_broken_support.append(sym)
+            continue
+
         # Inverse-vol weight: score / ATR. Negative scores get negative
         # weight which we floor at 0 (top picks have positive score by
         # construction, but be robust).
@@ -553,7 +577,9 @@ def daily_open_run(wrapper) -> str:
         raw_weights[sym] = w
         atrs[sym] = atr
         last_prices[sym] = last_price
-        stop_prices[sym] = _rolling_low_stop(b, SUPPORT_LOOKBACK, STOP_BUFFER_PCT) or 0.0
+        stop_prices[sym] = stop_price
+    if skipped_broken_support:
+        log.warning("broken-support skips this slice: %s", skipped_broken_support)
 
     total_w = sum(raw_weights.values())
     if total_w <= 0:
@@ -675,6 +701,7 @@ def post_open_stop_arming(wrapper) -> str:
     bars = _get_daily_bars(symbols, days_back=30)
 
     armed = 0
+    skipped_broken = 0
     for sym, qty in lots:
         # Skip if a stop is already tagged for this lot/date.
         if _find_existing_stop(client, sym, today_iso):
@@ -684,11 +711,41 @@ def post_open_stop_arming(wrapper) -> str:
         if stop_price is None or stop_price <= 0:
             log.warning("post-open arm skip %s: no rolling-low stop", sym)
             continue
+        # BROKEN-SUPPORT GUARD. Use Alpaca's live position price (the
+        # ground truth post-fill) — NOT a DuckDB bar that might still
+        # be a day stale at 8:33 CT before the 8:35 CT pipeline tick
+        # ingests today's bar. If the rolling-low stop ends up at or
+        # above the current position price, the entry has gapped below
+        # its 3-day support — a SELL stop here would be rejected by
+        # Alpaca (stop_price must be < current price), and the strategy
+        # thesis (mean-reversion off support) doesn't apply when support
+        # is already broken. Leave the lot exposed to the 5-day expiry.
+        current_price = 0.0
+        try:
+            pos = client.get_open_position(sym)
+            current_price = float(pos.current_price or 0.0)
+        except Exception as e:
+            # Position not found, not yet open, etc. — fall back to bar.
+            log.debug("post-open arm: get_open_position(%s) failed: %s", sym, e)
+            try:
+                current_price = float(b[-1][4]) if b else 0.0
+            except Exception:
+                current_price = 0.0
+        if current_price > 0 and stop_price >= current_price:
+            log.error(
+                "post-open arm REFUSED for %s: stop $%.2f >= current $%.2f "
+                "(broken support — lot has no protective stop, will rely "
+                "on 5-day expiry)",
+                sym, stop_price, current_price,
+            )
+            skipped_broken += 1
+            continue
         if _place_stop(client, symbol=sym, qty=qty, stop_price=stop_price,
                        signal_date=today_iso,
                        account_number=wrapper.session.account_number):
             armed += 1
-    log.info("post-open stop arming: armed %d/%d stops", armed, len(lots))
+    log.info("post-open stop arming: armed %d/%d stops (%d broken-support skips)",
+             armed, len(lots), skipped_broken)
     return "ok"
 
 
@@ -743,6 +800,35 @@ def daily_close_mark(wrapper) -> str:
         new_stop = _rolling_low_stop(b, SUPPORT_LOOKBACK, STOP_BUFFER_PCT)
         if new_stop is None or new_stop <= 0:
             log.warning("close-mark skip %s: no rolling-low stop", sym)
+            continue
+        # BROKEN-SUPPORT GUARD on the refresh too. Use Alpaca's live
+        # position price for the comparison (DuckDB bar may be stale
+        # before/during pipeline ticks). If the rolling-low now sits
+        # above current price, the lot is below its prior support —
+        # we can't place a sell-stop above market. Cancel any old stop
+        # and leave the lot stop-less; the 5-day expiry will catch it.
+        current_price = 0.0
+        try:
+            pos = client.get_open_position(sym)
+            current_price = float(pos.current_price or 0.0)
+        except Exception:
+            try:
+                current_price = float(b[-1][4]) if b else 0.0
+            except Exception:
+                current_price = 0.0
+        if current_price > 0 and new_stop >= current_price:
+            log.warning(
+                "close-mark stop refresh REFUSED for %s: rolling-low $%.2f "
+                ">= current $%.2f. Cancelling old stop (lot now stop-less; "
+                "relies on 5-day expiry).",
+                sym, new_stop, current_price,
+            )
+            old_id = _find_existing_stop(client, sym, signal_date)
+            if old_id:
+                try:
+                    client.cancel_order_by_id(old_id)
+                except Exception:
+                    pass
             continue
         # Cancel any existing stop for this lot.
         old_id = _find_existing_stop(client, sym, signal_date)
