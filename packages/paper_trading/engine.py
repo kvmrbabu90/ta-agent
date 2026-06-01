@@ -20,6 +20,15 @@ Strategy (see `StrategyConfig` for tunables):
     where support_level = rolling min(low) over the prior `support_lookback_days`
     bars. At the 5 PM mark, if today's close ≤ stop_level, the lot exits at
     stop_level (slippage and gaps explicitly ignored — per spec).
+
+    **Broken-support guard (added 2026-06-01):** if the computed stop_level
+    is at or above today's entry price (stock has gapped down through prior
+    support), the stop is disabled for that lot and it runs to the 5-day
+    expiry. Matches the live Alpaca engine's behavior — a SELL stop above
+    current price cannot exist on any real broker. Prior to this guard the
+    simulator recorded phantom exits at `stop_level` whenever today's close
+    was below it, even when the close never touched `stop_level` intraday;
+    audit showed this artifact contributed ~19% of total program realized P&L.
   - **Costs**: IBKR Lite — $0 commission for US listed stocks. Pass-through
     fees on sells only: SEC fee ($0.0000278 × notional) + FINRA TAF
     ($0.000166/share, max $8.30). Opens are free.
@@ -1008,6 +1017,26 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
                             )
                             if support is not None:
                                 stop_level = support * (1.0 - cfg.stop_buffer_pct)
+
+                    # BROKEN-SUPPORT GUARD. If the computed stop is at or
+                    # above today's open price, the stop is invalid — the
+                    # stock has gapped down through its prior support, and
+                    # a SELL stop above current price cannot exist in the
+                    # real market (Alpaca / any broker would reject it).
+                    #
+                    # The PRIOR simulator behaviour exited at `stop_level`
+                    # whenever today's close was below it — even when the
+                    # close never touched it intraday. That recorded
+                    # phantom exits at prices that never traded. WF
+                    # analysis showed this artifact accounted for ~19% of
+                    # the program's cumulative realized P&L.
+                    #
+                    # New behaviour: disable the stop on this lot. The
+                    # lot runs to the normal 5-day expiry exit. Matches
+                    # the live Alpaca engine's broken-support guard
+                    # (services/alpaca/engine.py:daily_open_run).
+                    if stop_level is not None and stop_level >= px:
+                        stop_level = None
                     # Open-side commission. IBKR Lite = 0. India retail
                     # (zerodha delivery) ≈ 1.7 bps from exchange fees +
                     # stamp duty. Logged as `cost` column so it shows up in
