@@ -1,6 +1,12 @@
-# Kubera — Walk-Forward Backtest Learnings (12 years 4 months)
+# Kubera V1 — Walk-Forward Backtest Learnings (12 years 5 months)
 
-> Internal codename: **Kubera** (कुबेर — Hindu lord of wealth). See [`../KUBERA.md`](../KUBERA.md) for the codename and pipeline overview.
+> Internal codename: **Kubera** (कुबेर — Hindu lord of wealth). See [`../KUBERA.md`](../KUBERA.md) for the V1 spec and pipeline overview.
+
+> **🔒 V1 LOCKED 2026-06-01.** Entry, exit, stop-loss, sizing, and accounting
+> are all frozen at the values documented here and in `KUBERA.md`. No further
+> strategy changes without re-validating against the full 149-month walk-forward.
+> Reference performance (post-correction): cumulative 42.6×, +33.4%/yr, Sharpe 1.43,
+> Sortino 2.31.
 
 **Strict walk-forward backtest, SP500 universe, Jan 2014 → May 2026 (149 monthly retrains)**
 
@@ -2265,6 +2271,30 @@ Both surfaces now produce identical accounting on the same predictions.
 - Live targeting should be calibrated to corrected numbers, not original. A first-year live return of +20-30% would be on-trend; +50% would be a positive surprise relative to *honest* expectations.
 
 **Process learning:** Both surfaces (simulator + live engine) were independently developed against the same spec ("stop at rolling-low × 0.997"), but the simulator faithfully implemented a spec that was *incomplete* (it didn't address the broken-support case), while the live engine had to be forced to confront it by Alpaca's rejection rules. The discrepancy only became visible when both were running side-by-side. **Lesson: every backtest needs at least one paired live shadow run, even for one week, to catch this class of bug before scaling.** Kubera's live launch caught the bug on day 1 — at $200k paper, not at $1M live.
+
+**Follow-up audit: no recoverable feature was hiding in the phantom code.** After
+the headline correction we asked: "the phantom-exit code accidentally implemented
+something — was there a real take-profit-at-prior-support strategy buried in there?"
+A 4-scenario walk-forward simulation on all 1,028 broken-support entries (skip-stop
+vs TP-only vs TP-plus-safety variants) was definitive:
+
+| Scenario | Cumulative P&L (flat, 1,028 entries) |
+|---|---|
+| A. Skip stop, run to 5-day expiry (the V1 fix) | **+$1,702** |
+| B. TP at rolling-low only | −$1,006 |
+| B2. TP + safety stop at −7% | −$528 |
+| B3. TP + safety stop at −10% | −$572 |
+
+Every take-profit variant *destroyed* legitimate alpha. The reason: 82% of broken-
+support entries do recover to the rolling-low intraday — but they continue reverting
+*past* that level over the remaining 4 days of the holding window. The mean-reversion
+alpha lives in the post-recovery continuation, not in stopping at the prior support
+level. Capping with a take-profit locks in a small early win and surrenders the
+larger continuation gain.
+
+**Net: the V1 broken-support guard (skip stop, run to expiry) is the optimal
+handling. No further strategy changes are warranted on this lot class.** This
+audit confirms V1 lock.
 
 
 ## End of learnings document
