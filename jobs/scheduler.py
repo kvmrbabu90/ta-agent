@@ -48,7 +48,7 @@ from packages.common.logging import log
 # dashboard equity curve always starts at the configured starting cash on
 # this date. Update to re-baseline (e.g. after a strategy change worth
 # marking fresh).
-LIVE_PAPER_START_DATE = date(2026, 6, 1)
+LIVE_PAPER_START_DATE = date(2026, 6, 2)
 # Starting cash for the live paper run. Pinned here so the simulator
 # re-builds the run with the right baseline on every pipeline tick (the
 # backtest() function rewrites paper_runs.default.starting_cash from
