@@ -703,15 +703,25 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
 type TradeSortKey =
   | 'date' | 'symbol' | 'action' | 'entry_date' | 'entry' | 'price' | 'realized' | 'realized_pct';
 
-// % return on a closing trade. Long: (exit - entry) / entry. Doesn't apply
-// to OPEN rows (no realized P&L yet).
+// % return on a closing trade. Derive from realized_pnl rather than from
+// the side label — the simulator emits three close sides ('long_close',
+// 'stop_close' for long stop-outs, 'short_close') and the earlier
+// implementation incorrectly classified 'stop_close' as a short (the
+// startsWith('long') check missed it), flipping the sign on every
+// long-side stop. realized_pnl is signed correctly by construction:
+//
+//   pct = realized_pnl / (qty × entry_price) × 100
+//
+// Works for any close shape: a long winner has +realized → +pct,
+// a long loser (incl. stop-out) has −realized → −pct, a short winner
+// has +realized → +pct. No need to know the side label at all.
 function tradePctReturn(t: PaperTrade): number | null {
   if (t.side.endsWith('_open')) return null;
   if (t.entry_price == null || !t.entry_price) return null;
-  const isLong = t.side.startsWith('long');
-  return isLong
-    ? ((t.fill_price - t.entry_price) / t.entry_price) * 100
-    : ((t.entry_price - t.fill_price) / t.entry_price) * 100;
+  if (t.realized_pnl == null) return null;
+  const denom = t.qty * t.entry_price;
+  if (denom <= 0) return null;
+  return (t.realized_pnl / denom) * 100;
 }
 
 const TRADE_ACCESSORS: Record<TradeSortKey, (t: PaperTrade) => SortValue> = {
