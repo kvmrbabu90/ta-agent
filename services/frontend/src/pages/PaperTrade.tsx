@@ -558,7 +558,7 @@ function SortableTh<K extends string>({
   const active = sort?.key === sortKey;
   const dir = active ? sort!.dir : null;
   return (
-    <th className={`px-3 py-2 ${align === 'right' ? 'text-right' : 'text-left'}`} title={title}>
+    <th className={`px-2 py-2 ${align === 'right' ? 'text-right' : 'text-left'}`} title={title}>
       <button
         type="button"
         onClick={() => onSort(sortKey)}
@@ -625,33 +625,36 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
       <h2 className="text-base font-semibold text-gray-100">
         Open positions <span className="text-gray-500">({positions.length})</span>
       </h2>
-      <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900/60">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-lg border border-gray-800 bg-gray-900/60">
+        <table className="w-full text-sm whitespace-nowrap">
           <thead className="bg-gray-900 text-[11px] uppercase tracking-wider text-gray-500">
             <tr>
-              <SortableTh label="Symbol" sortKey="symbol" sort={sort} onSort={toggle} />
+              <SortableTh label="Sym" sortKey="symbol" sort={sort} onSort={toggle} />
               <SortableTh label="Qty" sortKey="qty" align="right" sort={sort} onSort={toggle} />
-              <SortableTh label="Entry" sortKey="entry" align="right" sort={sort} onSort={toggle} />
               <SortableTh
-                label="Entry Date" sortKey="entry_date" align="right" sort={sort} onSort={toggle}
+                label="Entry" sortKey="entry" align="right" sort={sort} onSort={toggle}
+                title="Entry price. For multi-lot symbols this is the qty-weighted average across lots."
+              />
+              <SortableTh
+                label="Entry" sortKey="entry_date" align="right" sort={sort} onSort={toggle}
                 title="Entry date of the OLDEST lot for this symbol. When the position is held across multiple overlapping tranches (e.g. rebought daily across 5 days), this shows the first entry."
               />
               <SortableTh
                 label="Lots" sortKey="lots" align="right" sort={sort} onSort={toggle}
-                title="Number of open lots (entry orders) aggregated into this row. Overlapping portfolios rebuy a symbol across trading days; this is how many legs are still held."
+                title="Number of open lots (entry orders) aggregated into this row."
               />
               <SortableTh
-                label="Exit (planned)" sortKey="planned_exit" align="right" sort={sort} onSort={toggle}
-                title="Forced-close date for the position. Computed as entry-of-the-NEWEST lot + holding_days (5) trading days. Position fully closes by then unless the stop fires earlier."
+                label="Exit" sortKey="planned_exit" align="right" sort={sort} onSort={toggle}
+                title="Planned forced-close date. Computed as entry-of-the-NEWEST lot + holding_days (5) trading days. Position fully closes by then unless the stop fires earlier."
               />
               <SortableTh
                 label="Stop" sortKey="stop" align="right" sort={sort} onSort={toggle}
-                title="Stop-loss level. Tightest stop across active lots (highest level for a long). Position closes if price touches this level at the 5pm CT check."
+                title="Stop-loss level. Tightest stop across active lots."
               />
               <SortableTh label="Last" sortKey="last" align="right" sort={sort} onSort={toggle} />
               <SortableTh label="P&L" sortKey="pnl" align="right" sort={sort} onSort={toggle} />
               <SortableTh
-                label="% Ret" sortKey="pnl_pct" align="right" sort={sort} onSort={toggle}
+                label="%Ret" sortKey="pnl_pct" align="right" sort={sort} onSort={toggle}
                 title="Unrealized return = (last_price − entry_price) / entry_price × 100. For multi-lot symbols entry_price is the qty-weighted average across lots."
               />
             </tr>
@@ -662,29 +665,29 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
               const pct = positionPctReturn(p);
               return (
                 <tr key={p.symbol} className="hover:bg-gray-900/80">
-                  <td className="px-3 py-2 font-mono text-gray-100">{p.symbol}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-300">{p.qty.toFixed(3)}</td>
+                  <td className="px-2 py-2 font-mono text-gray-100">{p.symbol}</td>
+                  <td className="px-2 py-2 text-right font-mono text-gray-300">{p.qty.toFixed(3)}</td>
                   <td
-                    className="px-3 py-2 text-right font-mono text-gray-400"
+                    className="px-2 py-2 text-right font-mono text-gray-400"
                     title={p.lot_count > 1 ? `qty-weighted avg across ${p.lot_count} lots` : undefined}
                   >
                     {sym}{p.entry_price.toFixed(2)}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-500">{p.entry_date}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-300">{p.lot_count}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-500">
+                  <td className="px-2 py-2 text-right font-mono text-gray-500">{p.entry_date}</td>
+                  <td className="px-2 py-2 text-right font-mono text-gray-300">{p.lot_count}</td>
+                  <td className="px-2 py-2 text-right font-mono text-gray-500">
                     {p.planned_exit_date ?? '—'}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-amber-400/80">
+                  <td className="px-2 py-2 text-right font-mono text-amber-400/80">
                     {p.stop_level != null ? `${sym}${p.stop_level.toFixed(2)}` : '—'}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-300">
+                  <td className="px-2 py-2 text-right font-mono text-gray-300">
                     {p.last_price != null ? `${sym}${p.last_price.toFixed(2)}` : '—'}
                   </td>
-                  <td className={`px-3 py-2 text-right font-mono ${isPosPnl ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <td className={`px-2 py-2 text-right font-mono ${isPosPnl ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {signedMoneyFmt(p.unrealized_pnl, currency)}
                   </td>
-                  <td className={`px-3 py-2 text-right font-mono ${pct == null ? 'text-gray-500' : pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <td className={`px-2 py-2 text-right font-mono ${pct == null ? 'text-gray-500' : pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
                   </td>
                 </tr>
@@ -736,13 +739,13 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
       <h2 className="text-base font-semibold text-gray-100">
         Recent closes <span className="text-gray-500">({data.length})</span>
       </h2>
-      <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900/60">
+      <div className="overflow-x-auto rounded-lg border border-gray-800 bg-gray-900/60">
         {loading ? (
           <div className="px-3 py-6"><LoadingSpinner label="Loading trades…" /></div>
         ) : data.length === 0 ? (
           <div className="px-3 py-6"><EmptyState title="No trades yet" /></div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-sm whitespace-nowrap">
             <thead className="bg-gray-900 text-[11px] uppercase tracking-wider text-gray-500">
               <tr>
                 <SortableTh label="Date" sortKey="date" sort={sort} onSort={toggle} />
@@ -766,9 +769,9 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
                 const pct = tradePctReturn(t);
                 return (
                   <tr key={`${t.trade_date}-${t.symbol}-${t.side}-${i}`} className="hover:bg-gray-900/80">
-                    <td className="px-3 py-2 font-mono text-gray-400">{t.trade_date}</td>
-                    <td className="px-3 py-2 font-mono text-gray-100">{t.symbol}</td>
-                    <td className="px-3 py-2 text-xs">
+                    <td className="px-2 py-2 font-mono text-gray-400">{t.trade_date}</td>
+                    <td className="px-2 py-2 font-mono text-gray-100">{t.symbol}</td>
+                    <td className="px-2 py-2 text-xs">
                       <span className={[
                         'rounded px-1.5 py-0.5 font-medium uppercase',
                         isLong && isOpen ? 'bg-emerald-500/15 text-emerald-300' :
@@ -779,20 +782,20 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
                         {t.side.replace('_', ' ')}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-gray-500">{t.entry_date ?? '—'}</td>
-                    <td className="px-3 py-2 text-right font-mono text-gray-400">
+                    <td className="px-2 py-2 text-right font-mono text-gray-500">{t.entry_date ?? '—'}</td>
+                    <td className="px-2 py-2 text-right font-mono text-gray-400">
                       {t.entry_price != null ? `${sym}${t.entry_price.toFixed(2)}` : '—'}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-gray-300">{sym}{t.fill_price.toFixed(2)}</td>
+                    <td className="px-2 py-2 text-right font-mono text-gray-300">{sym}{t.fill_price.toFixed(2)}</td>
                     <td className={[
-                      'px-3 py-2 text-right font-mono',
+                      'px-2 py-2 text-right font-mono',
                       isOpen ? 'text-gray-500' :
                         realized >= 0 ? 'text-emerald-400' : 'text-rose-400',
                     ].join(' ')}>
                       {isOpen ? '—' : signedMoneyFmt(realized, currency)}
                     </td>
                     <td className={[
-                      'px-3 py-2 text-right font-mono',
+                      'px-2 py-2 text-right font-mono',
                       isOpen || pct == null ? 'text-gray-500' :
                         pct >= 0 ? 'text-emerald-400' : 'text-rose-400',
                     ].join(' ')}>
