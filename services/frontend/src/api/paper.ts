@@ -23,7 +23,9 @@ export function fetchPaperTrades(
   return apiGet<PaperTradesResponse>('/paper/trades', {
     run_id: runId,
     limit,
-    closes_only: closesOnly,
+    // apiGet's params type accepts string|number|null — coerce booleans
+    // to the strings FastAPI expects on the wire.
+    closes_only: closesOnly ? 'true' : 'false',
   });
 }
 

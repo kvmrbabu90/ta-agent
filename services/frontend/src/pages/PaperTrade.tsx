@@ -135,6 +135,8 @@ export function PaperTradePage() {
           data={snapQ.data}
           trades={tradesQ.data?.trades ?? []}
           tradesLoading={tradesQ.isLoading}
+          picks={picksQ.data}
+          picksLoading={picksQ.isLoading}
           currency={currency}
         />
       )}
@@ -147,7 +149,7 @@ export function PaperTradePage() {
 // ---------------------------------------------------------------------------
 
 function PaperRunView({
-  data, trades, tradesLoading, currency,
+  data, trades, tradesLoading, picks, picksLoading, currency,
 }: {
   data: {
     run: PaperRunSummary;
@@ -160,6 +162,8 @@ function PaperRunView({
   };
   trades: PaperTrade[];
   tradesLoading: boolean;
+  picks: NextDayPicksResponse | undefined;
+  picksLoading: boolean;
   currency: Currency;
 }) {
   const { run, equity_curve, positions } = data;
@@ -237,7 +241,7 @@ function PaperRunView({
             )}
           </div>
         </section>
-        <NextDayPicksTable picks={picksQ.data} loading={picksQ.isLoading} currency={currency} />
+        <NextDayPicksTable picks={picks} loading={picksLoading} currency={currency} />
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
