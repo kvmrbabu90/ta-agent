@@ -595,11 +595,19 @@ def daily_open_run(wrapper) -> str:
                  [(s, q, round(p, 2), round(stp, 2)) for s, q, p, stp in opens_to_submit])
 
     # ------- 3. Stage CLOSE_LONG signals -------
+    # Provide a target_price (yesterday's close from DuckDB) so the
+    # OPG-LIMIT path in orders.approve_and_submit can compute a sell-side
+    # limit (yesterday's close × 0.98). Without target_price the OPG
+    # market path is used, which expires on Alpaca paper.
     pending_close_ids: list[int] = []
+    closes_bars = _get_daily_bars([s for s, _ in closes_to_submit], days_back=10) if closes_to_submit else {}
     for sym, qty in closes_to_submit:
+        cb = closes_bars.get(sym, [])
+        close_target = float(cb[-1][4]) if cb else 0.0  # yesterday's close
         sid = orders_module.stage_signal(
             signal_date=today_iso, action="CLOSE_LONG",
-            symbol=sym, qty=qty, target_price=None,
+            symbol=sym, qty=qty,
+            target_price=(close_target if close_target > 0 else None),
             notes=f"auto-close: opened {close_signal_date}",
         )
         pending_close_ids.append(sid)
@@ -937,8 +945,18 @@ def run() -> int:
                         _heartbeat(con, last_error=str(e))
 
             # ---- POST-CLOSE: recompute & refresh stops for every open lot ----
+            # Gate: market must have been open AT SOME POINT today before
+            # we can run a "post-close". The previous version only checked
+            # `not clock.is_open` which trivially holds before the open too
+            # — so it fired immediately after the pre-open submission and
+            # tried to attach stops to BUYs still in the opening auction
+            # (Alpaca rejected them as wash-trade). The post-open arming
+            # routine is the proxy for "market opened today" — if we ran
+            # that, we know is_open transitioned True at some point.
+            market_opened_today = last_arming_date == today_iso
             if (not clock.is_open
                 and last_run_date == today_iso
+                and market_opened_today
                 and last_close_mark_date != today_iso):
                 log.info("post-close trigger — refreshing rolling-low stops for %s", today_iso)
                 try:

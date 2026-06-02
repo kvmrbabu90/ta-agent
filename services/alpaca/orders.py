@@ -29,7 +29,20 @@ from dataclasses import dataclass
 from typing import Optional
 
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest, StopLossRequest
+from alpaca.trading.requests import (
+    LimitOrderRequest, MarketOrderRequest, StopLossRequest,
+)
+
+# When using TimeInForce.OPG (market-on-open), Alpaca's PAPER account
+# opening-auction simulation is unreliable for market orders — unmatched
+# orders expire instead of rolling forward, leaving the engine with no
+# fill. Workaround: submit as LIMIT with a generous cushion (2% buy-side
+# above ref, 2% sell-side below). This still participates in the opening
+# auction (TIF=OPG semantics) but virtually guarantees a fill while
+# protecting against pathological gaps. Live (non-paper) accounts have
+# real auction liquidity and don't need this; the code is mode-agnostic
+# and applies the cushion in both, with no downside.
+OPG_LIMIT_BUFFER_PCT = 0.02
 
 from . import db
 from .connection import KuberaAlpaca, Mode
@@ -219,6 +232,28 @@ def approve_and_submit(signal_ids: list[int], *, approved_by: str,
                     time_in_force=tif,
                     order_class=OrderClass.OTO,
                     stop_loss=StopLossRequest(stop_price=stop_price),
+                )
+            elif tif == TimeInForce.OPG and tgt > 0:
+                # OPG path. Submit as LIMIT instead of MARKET to dodge
+                # Alpaca paper's unreliable opening-auction simulation
+                # for market orders (orders expire if not matched in
+                # the cross). The limit price is set generously around
+                # the target price so the order still fills at the
+                # opening auction print:
+                #   BUY:  limit = target × (1 + buffer)   — allow paying up to +2%
+                #   SELL: limit = target × (1 - buffer)   — allow selling down to -2%
+                stop_price = None
+                buf = OPG_LIMIT_BUFFER_PCT
+                limit_price = (
+                    round(tgt * (1.0 + buf), 2) if side == OrderSide.BUY
+                    else round(tgt * (1.0 - buf), 2)
+                )
+                req = LimitOrderRequest(
+                    symbol=sig.symbol,
+                    qty=sig.qty,
+                    side=side,
+                    time_in_force=tif,
+                    limit_price=limit_price,
                 )
             else:
                 stop_price = None
