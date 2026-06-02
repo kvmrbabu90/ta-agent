@@ -1,5 +1,9 @@
 import { apiGet } from './client';
-import type { PaperSnapshotResponse, PaperTradesResponse } from './types';
+import type {
+  NextDayPicksResponse,
+  PaperSnapshotResponse,
+  PaperTradesResponse,
+} from './types';
 
 export function fetchPaperSnapshot(
   runId = 'default',
@@ -20,5 +24,13 @@ export function fetchPaperTrades(
     run_id: runId,
     limit,
     closes_only: closesOnly,
+  });
+}
+
+export function fetchNextDayPicks(
+  runId = 'default',
+): Promise<NextDayPicksResponse> {
+  return apiGet<NextDayPicksResponse>('/paper/next-day-picks', {
+    run_id: runId,
   });
 }

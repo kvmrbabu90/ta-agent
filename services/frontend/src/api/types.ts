@@ -372,6 +372,31 @@ export interface PaperTradesResponse {
   trades: PaperTrade[];
 }
 
+export interface NextDayPick {
+  rank: number;
+  symbol: string;
+  predicted_return: number;
+  top_quintile_proba: number | null;
+  bottom_quintile_proba: number | null;
+  combined_score: number;
+  last_close: number;
+  atr_14: number | null;
+  planned_qty: number;
+  planned_notional: number;
+  planned_weight_pct: number;
+  rolling_low_stop: number | null;
+  broken_support: boolean;
+}
+
+export interface NextDayPicksResponse {
+  as_of: string;
+  target_trade_date: string | null;
+  nav: number;
+  slice_budget: number;
+  universe: string;
+  picks: NextDayPick[];
+}
+
 // --- System status -----------------------------------------------------------
 
 export interface SystemStatusResponse {

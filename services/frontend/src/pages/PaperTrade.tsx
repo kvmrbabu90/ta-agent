@@ -3,13 +3,13 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
 import { ArrowDown, ArrowUp, Banknote, ChevronsUpDown, Clock } from 'lucide-react';
-import { usePaperSnapshot, usePaperTrades } from '@/hooks/usePaper';
+import { useNextDayPicks, usePaperSnapshot, usePaperTrades } from '@/hooks/usePaper';
 import { useUniverses } from '@/hooks/useUniverses';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
 import { UniverseSelector } from '@/components/UniverseSelector';
-import type { PaperEquityPoint, PaperPosition, PaperTrade, PaperRunSummary } from '@/api/types';
+import type { NextDayPicksResponse, PaperEquityPoint, PaperPosition, PaperTrade, PaperRunSummary } from '@/api/types';
 
 // ---------------------------------------------------------------------------
 // Currency formatting — supports USD ($) and INR (₹ with Indian comma format)
@@ -107,6 +107,7 @@ export function PaperTradePage() {
   const { run_id: runId, currency } = mapping;
 
   const snapQ = usePaperSnapshot(runId, 365);
+  const picksQ = useNextDayPicks(runId);
   // Recent closes only — OPEN trades are noisy and don't carry realized
   // P&L. Pull the last 100 close events (long_close, short_close,
   // stop_close) so the user sees what's been booked recently.
@@ -193,48 +194,51 @@ function PaperRunView({
         currency={currency}
       />
 
-      <section className="space-y-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-base font-semibold text-gray-100">Equity curve</h2>
-          <div className="text-[11px] text-gray-500">
-            <span className="text-emerald-400">strategy</span>
-            {(data.post_tax_curve?.length ?? 0) > 0 ? (
-              <>
-                {' · '}
-                <span className="text-emerald-400/70" title="30% short-term capital gains applied at end of each completed calendar year, reduced-base compounding">
-                  after tax
-                </span>
-              </>
-            ) : null}
-            {(data.benchmark_curve?.length ?? 0) > 0 ? (
-              <>
-                {' · '}
-                <span className="text-sky-400" title="SPY buy-and-hold rebased to the paper run's starting capital">
-                  {data.benchmark_symbol ?? 'SPY'} B&amp;H
-                </span>
-              </>
-            ) : null}
-            <span className="text-gray-500"> · IBKR Lite fees already in strategy</span>
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <section className="space-y-3 xl:col-span-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-base font-semibold text-gray-100">Equity curve</h2>
+            <div className="text-[11px] text-gray-500">
+              <span className="text-emerald-400">strategy</span>
+              {(data.post_tax_curve?.length ?? 0) > 0 ? (
+                <>
+                  {' · '}
+                  <span className="text-emerald-400/70" title="30% short-term capital gains applied at end of each completed calendar year, reduced-base compounding">
+                    after tax
+                  </span>
+                </>
+              ) : null}
+              {(data.benchmark_curve?.length ?? 0) > 0 ? (
+                <>
+                  {' · '}
+                  <span className="text-sky-400" title="SPY buy-and-hold rebased to the paper run's starting capital">
+                    {data.benchmark_symbol ?? 'SPY'} B&amp;H
+                  </span>
+                </>
+              ) : null}
+              <span className="text-gray-500"> · IBKR Lite fees already in strategy</span>
+            </div>
           </div>
-        </div>
-        <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
-          {equity_curve.length > 0 ? (
-            <EquityChart
-              points={equity_curve}
-              benchPoints={data.benchmark_curve}
-              postTaxPoints={data.post_tax_curve}
-              benchSymbol={data.benchmark_symbol}
-              starting={run.starting_cash}
-              currency={currency}
-            />
-          ) : (
-            <EmptyState
-              title="No equity history yet"
-              hint="Need at least one trading day in the backtest window."
-            />
-          )}
-        </div>
-      </section>
+          <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-4">
+            {equity_curve.length > 0 ? (
+              <EquityChart
+                points={equity_curve}
+                benchPoints={data.benchmark_curve}
+                postTaxPoints={data.post_tax_curve}
+                benchSymbol={data.benchmark_symbol}
+                starting={run.starting_cash}
+                currency={currency}
+              />
+            ) : (
+              <EmptyState
+                title="No equity history yet"
+                hint="Need at least one trading day in the backtest window."
+              />
+            )}
+          </div>
+        </section>
+        <NextDayPicksTable picks={picksQ.data} loading={picksQ.isLoading} currency={currency} />
+      </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <PositionsTable positions={positions} currency={currency} />
@@ -858,5 +862,127 @@ function RunMetadata({ run, currency }: { run: PaperRunSummary; currency: Curren
       first trade {run.first_trade_date} · last trade {run.last_trade_date} ·
       starting cash {moneyFmt(run.starting_cash, currency, 0)} · realized P&amp;L {run.final_realized_pnl != null ? signedMoneyFmt(run.final_realized_pnl, currency) : '—'}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Next-day picks table — what the engine will trade at tomorrow's open
+// ---------------------------------------------------------------------------
+
+function NextDayPicksTable({
+  picks,
+  loading,
+  currency,
+}: {
+  picks: NextDayPicksResponse | undefined;
+  loading: boolean;
+  currency: Currency;
+}) {
+  const sym = currencySymbol(currency);
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-base font-semibold text-gray-100">Planned next-day picks</h2>
+        {picks?.target_trade_date && (
+          <span className="text-[11px] text-gray-500">
+            for <span className="font-mono text-gray-300">{picks.target_trade_date}</span>
+          </span>
+        )}
+      </div>
+      <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+        {loading ? (
+          <div className="px-2 py-6"><LoadingSpinner label="Loading picks…" /></div>
+        ) : !picks || picks.picks.length === 0 ? (
+          <EmptyState
+            title="No picks yet"
+            hint="Updates after the 17:00 CT daily_predict step."
+          />
+        ) : (
+          <>
+            <div className="mb-2 text-[11px] text-gray-500">
+              as_of <span className="font-mono text-gray-300">{picks.as_of}</span>
+              {' · '}NAV <span className="font-mono text-gray-300">{moneyFmt(picks.nav, currency, 0)}</span>
+              {' · '}slice <span className="font-mono text-gray-300">{moneyFmt(picks.slice_budget, currency, 0)}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm whitespace-nowrap">
+                <thead className="text-[11px] uppercase tracking-wider text-gray-500">
+                  <tr>
+                    <th className="px-2 py-1 text-left">Sym</th>
+                    <th
+                      className="px-2 py-1 text-right"
+                      title="Conviction score = predicted_return × (1 + (top_q − bot_q)). The ranking signal."
+                    >
+                      Score
+                    </th>
+                    <th className="px-2 py-1 text-right">Close</th>
+                    <th
+                      className="px-2 py-1 text-right"
+                      title="14-day Wilder ATR. Used as the inverse-vol denominator in the slice allocation."
+                    >
+                      ATR
+                    </th>
+                    <th className="px-2 py-1 text-right">Qty</th>
+                    <th
+                      className="px-2 py-1 text-right"
+                      title="Planned dollar allocation = slice_budget × (score/ATR) / Σ(score/ATR)."
+                    >
+                      $
+                    </th>
+                    <th
+                      className="px-2 py-1 text-right"
+                      title="% of slice budget allocated to this pick."
+                    >
+                      Wt
+                    </th>
+                    <th
+                      className="px-2 py-1 text-right"
+                      title="3-day rolling-low × 0.997 — the protective stop. Empty when the stock has gapped below prior support (no stop placed; lot relies on 5-day expiry)."
+                    >
+                      Stop
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800">
+                  {picks.picks.map((p) => (
+                    <tr key={p.symbol} className={p.broken_support ? 'bg-amber-900/10' : 'hover:bg-gray-900/80'}>
+                      <td className="px-2 py-1.5 font-mono text-gray-100">{p.symbol}</td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-400">
+                        {(p.combined_score * 100).toFixed(3)}%
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-300">
+                        {sym}{p.last_close.toFixed(2)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-500">
+                        {p.atr_14 != null ? `${sym}${p.atr_14.toFixed(2)}` : '—'}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-300">
+                        {p.planned_qty}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-300">
+                        {sym}{Math.round(p.planned_notional).toLocaleString()}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-400">
+                        {p.planned_weight_pct.toFixed(1)}%
+                      </td>
+                      <td
+                        className={`px-2 py-1.5 text-right font-mono ${p.broken_support ? 'text-amber-400' : 'text-amber-400/80'}`}
+                        title={p.broken_support ? 'Broken support — no stop will be placed; lot runs to 5-day expiry only.' : undefined}
+                      >
+                        {p.broken_support
+                          ? 'brk'
+                          : p.rolling_low_stop != null
+                            ? `${sym}${p.rolling_low_stop.toFixed(2)}`
+                            : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
   );
 }

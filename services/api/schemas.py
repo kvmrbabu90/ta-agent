@@ -286,6 +286,39 @@ class PaperTradesResponse(_BaseResponse):
 
 
 # ---------------------------------------------------------------------------
+# /paper/next-day-picks — what the engine will trade tomorrow at the open
+# ---------------------------------------------------------------------------
+
+
+class NextDayPick(_BaseResponse):
+    rank: int
+    symbol: str
+    predicted_return: float
+    top_quintile_proba: float | None = None
+    bottom_quintile_proba: float | None = None
+    combined_score: float
+    last_close: float
+    atr_14: float | None = None
+    planned_qty: int
+    planned_notional: float
+    planned_weight_pct: float
+    rolling_low_stop: float | None = None
+    # True when rolling_low_stop >= last_close — the live Alpaca engine
+    # refuses to place a stop in this case; the simulator enters the lot
+    # but disables the stop (lot runs to 5-day expiry only).
+    broken_support: bool = False
+
+
+class NextDayPicksResponse(_BaseResponse):
+    as_of: date
+    target_trade_date: date | None = None
+    nav: float
+    slice_budget: float
+    universe: str
+    picks: list[NextDayPick] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # /system/status — UI freshness indicator
 # ---------------------------------------------------------------------------
 

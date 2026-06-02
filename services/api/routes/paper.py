@@ -15,6 +15,8 @@ from services.api.deps import get_duckdb_conn
 from packages.common.config import settings
 from packages.paper_trading import StrategyConfig, backtest, init_paper_db
 from services.api.schemas import (
+    NextDayPick,
+    NextDayPicksResponse,
     PaperBenchmarkPoint,
     PaperEquityPoint,
     PaperPosition,
@@ -225,8 +227,10 @@ def snapshot(
                         "earliest_entry": entry_date,
                         "latest_entry": entry_date,
                         "stop_level_max": stop_level,
+                        "lots": 0,
                     }
                 bucket = agg[key]
+                bucket["lots"] += 1
                 bucket["qty"] += float(qty)
                 bucket["cost_basis"] += float(qty) * float(entry)
                 if entry_date < bucket["earliest_entry"]:
@@ -309,6 +313,7 @@ def snapshot(
                         # lot expires).
                         planned_exit_date=_planned_exit(bucket["latest_entry"]),
                         stop_level=bucket["stop_level_max"],
+                        lot_count=bucket["lots"],
                     )
                 )
 
@@ -340,20 +345,31 @@ def trades(
     try:
         # Filter ON DB side for efficiency — applying after LIMIT would
         # under-count the result set.
+        # Self-join close rows to their opening lot (same lot_id + symbol) to
+        # surface the entry date and entry price alongside the exit. Open rows
+        # match themselves on the join; we null their entry fields in Python.
+        base_select = (
+            "SELECT c.trade_date, c.symbol, c.side, c.qty, c.fill_price, "
+            "c.cash_delta, c.realized_pnl, o.trade_date, o.fill_price "
+            "FROM paper_trades c "
+            "LEFT JOIN paper_trades o "
+            "  ON o.run_id = c.run_id AND o.lot_id = c.lot_id AND o.symbol = c.symbol "
+            "  AND o.side IN ('long_open', 'short_open') "
+            "WHERE c.run_id = ? "
+        )
         if closes_only:
             rows = conn.execute(
-                "SELECT trade_date, symbol, side, qty, fill_price, cash_delta, realized_pnl "
-                "FROM paper_trades WHERE run_id = ? "
-                "AND side IN ('long_close', 'short_close', 'stop_close') "
-                "ORDER BY trade_date DESC, symbol LIMIT ?",
+                base_select
+                + "AND c.side IN ('long_close', 'short_close', 'stop_close') "
+                "ORDER BY c.trade_date DESC, c.symbol LIMIT ?",
                 (run_id, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT trade_date, symbol, side, qty, fill_price, cash_delta, realized_pnl "
-                "FROM paper_trades WHERE run_id = ? ORDER BY trade_date DESC, symbol LIMIT ?",
+                base_select + "ORDER BY c.trade_date DESC, c.symbol LIMIT ?",
                 (run_id, limit),
             ).fetchall()
+        close_sides = {"long_close", "short_close", "stop_close"}
         trades_out = [
             PaperTrade(
                 trade_date=date.fromisoformat(r[0]),
@@ -363,6 +379,8 @@ def trades(
                 fill_price=r[4],
                 cash_delta=r[5],
                 realized_pnl=r[6],
+                entry_date=date.fromisoformat(r[7]) if (r[2] in close_sides and r[7]) else None,
+                entry_price=r[8] if r[2] in close_sides else None,
             )
             for r in rows
         ]
@@ -422,3 +440,209 @@ def _last_close_prices(symbols: list[str], on_or_before: date) -> dict[str, floa
     finally:
         duck.close()
     return {r[0]: float(r[1]) if r[1] is not None else None for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# /paper/next-day-picks — top 5 picks the engine will trade tomorrow at open
+# ---------------------------------------------------------------------------
+
+# Strategy constants — must match packages/paper_trading/engine.py and
+# services/alpaca/engine.py exactly. V1-locked values; do not vary.
+_TOP_N_PICKS = 5
+_HOLDING_DAYS = 5
+_ATR_LOOKBACK = 14
+_SUPPORT_LOOKBACK = 3
+_STOP_BUFFER_PCT = 0.003
+
+
+def _atr_wilder(highs: list[float], lows: list[float], closes: list[float],
+                  lookback: int = _ATR_LOOKBACK) -> float | None:
+    """Wilder's ATR over `lookback` bars. Returns most recent value."""
+    if len(highs) < lookback + 1:
+        return None
+    trs: list[float] = []
+    prev_close = closes[0]
+    for h, l, c in zip(highs[1:], lows[1:], closes[1:]):
+        tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+        trs.append(tr)
+        prev_close = c
+    if len(trs) < lookback:
+        return None
+    atr = sum(trs[:lookback]) / lookback
+    for tr in trs[lookback:]:
+        atr = (atr * (lookback - 1) + tr) / lookback
+    return atr
+
+
+@router.get("/next-day-picks", response_model=NextDayPicksResponse)
+def next_day_picks(
+    run_id: str = Query("default"),
+    duck: duckdb.DuckDBPyConnection = Depends(get_duckdb_conn),
+) -> NextDayPicksResponse:
+    """Top 5 picks the strategy will trade at the next session's open print.
+
+    Mirrors the engine logic exactly: pulls the latest as_of from
+    predictions_log, ranks by combined_score = predicted_return ×
+    (1 + (top_q − bot_q)), computes ATR(14) + rolling-low stop from
+    DuckDB OHLCV, sizes per-stock as (NAV / 5) × normalized inverse-vol
+    weight (combined_score / ATR(14)).
+
+    Updates whenever the 17:00 CT daily_predict step writes a fresh
+    as_of row — the dashboard re-queries on focus and picks update
+    automatically.
+    """
+    from datetime import timedelta as _td
+
+    # --- NAV (last close-mark equity for this paper run) ---
+    conn = _conn()
+    try:
+        nav_row = conn.execute(
+            "SELECT equity FROM paper_equity WHERE run_id = ? "
+            "AND snapshot_kind = 'close_5pm_ct' "
+            "ORDER BY trade_date DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if nav_row is None:
+            nav_row = conn.execute(
+                "SELECT starting_cash FROM paper_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        nav = float(nav_row[0]) if nav_row else 0.0
+        run_row = conn.execute(
+            "SELECT universe FROM paper_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        universe = run_row[0] if run_row else "SP500"
+    finally:
+        conn.close()
+
+    slice_budget = (nav / _HOLDING_DAYS) if nav > 0 else 0.0
+
+    # --- Latest predictions ---
+    pred_conn = sqlite3.connect(settings.predictions_sqlite_path,
+                                  check_same_thread=False)
+    try:
+        latest_row = pred_conn.execute(
+            "SELECT MAX(as_of) FROM predictions_log WHERE universe = ?",
+            (universe,),
+        ).fetchone()
+        latest_as_of = latest_row[0] if latest_row else None
+        if latest_as_of is None:
+            return NextDayPicksResponse(
+                as_of=date.today(),
+                target_trade_date=None,
+                nav=nav, slice_budget=slice_budget, universe=universe,
+                picks=[],
+            )
+        top_rows = pred_conn.execute(
+            "SELECT symbol, predicted_return, "
+            "COALESCE(top_quintile_proba, 0.0) AS top_q, "
+            "COALESCE(bottom_quintile_proba, 0.0) AS bot_q, "
+            "predicted_return * (1.0 + (COALESCE(top_quintile_proba, 0.0) "
+            "  - COALESCE(bottom_quintile_proba, 0.0))) AS combined_score "
+            "FROM predictions_log "
+            "WHERE universe = ? AND as_of = ? "
+            "ORDER BY combined_score DESC, symbol ASC LIMIT ?",
+            (universe, latest_as_of, _TOP_N_PICKS),
+        ).fetchall()
+    finally:
+        pred_conn.close()
+
+    as_of_d = date.fromisoformat(latest_as_of)
+
+    # --- Next NYSE trading session strictly after as_of ---
+    target_trade_date: date | None = None
+    try:
+        import pandas_market_calendars as mcal
+        cal = mcal.get_calendar("NYSE")
+        sched = cal.schedule(
+            start_date=as_of_d.isoformat(),
+            end_date=(as_of_d + _td(days=10)).isoformat(),
+        )
+        sessions = [d.date() for d in sched.index]
+        target_trade_date = next((s for s in sessions if s > as_of_d), None)
+    except Exception:
+        target_trade_date = None
+
+    if not top_rows:
+        return NextDayPicksResponse(
+            as_of=as_of_d, target_trade_date=target_trade_date,
+            nav=nav, slice_budget=slice_budget, universe=universe, picks=[],
+        )
+
+    # --- OHLCV for ATR + rolling-low ---
+    symbols = [r[0] for r in top_rows]
+    bars_rows = duck.execute(
+        "WITH ranked AS ( "
+        "  SELECT *, ROW_NUMBER() OVER ( "
+        "    PARTITION BY symbol, bar_date ORDER BY ingested_at DESC "
+        "  ) AS rn "
+        "  FROM ohlcv_daily "
+        "  WHERE symbol = ANY(?) AND bar_date BETWEEN ? AND ? "
+        ") "
+        "SELECT symbol, bar_date, high, low, close "
+        "FROM ranked WHERE rn = 1 ORDER BY symbol, bar_date",
+        [symbols, as_of_d - _td(days=60), as_of_d],
+    ).fetchall()
+    bars: dict[str, list[tuple]] = {s: [] for s in symbols}
+    for sym, d, h, l, c in bars_rows:
+        bars[sym].append((d, float(h), float(l), float(c)))
+    for s in bars:
+        bars[s].sort(key=lambda r: r[0])
+
+    # --- Compute per-pick metrics + inverse-vol weights ---
+    pick_meta: list[dict] = []
+    for sym, pred, top_q, bot_q, score in top_rows:
+        b = bars.get(sym, [])
+        highs = [r[1] for r in b]
+        lows = [r[2] for r in b]
+        closes = [r[3] for r in b]
+        atr = _atr_wilder(highs, lows, closes, _ATR_LOOKBACK)
+        last_close = closes[-1] if closes else 0.0
+        rolling_low_stop = None
+        if len(lows) >= _SUPPORT_LOOKBACK:
+            rolling_low_stop = round(
+                min(lows[-_SUPPORT_LOOKBACK:]) * (1.0 - _STOP_BUFFER_PCT), 2
+            )
+        broken_support = (
+            rolling_low_stop is not None and last_close > 0
+            and rolling_low_stop >= last_close
+        )
+        raw_weight = (max(0.0, float(score)) / atr) if (atr and atr > 0) else 0.0
+        pick_meta.append({
+            "symbol": sym, "predicted_return": float(pred),
+            "top_q": float(top_q) if top_q is not None else None,
+            "bot_q": float(bot_q) if bot_q is not None else None,
+            "combined_score": float(score), "last_close": float(last_close),
+            "atr_14": float(atr) if atr else None,
+            "rolling_low_stop": rolling_low_stop,
+            "broken_support": broken_support, "raw_weight": raw_weight,
+        })
+
+    total_weight = sum(p["raw_weight"] for p in pick_meta)
+
+    picks: list[NextDayPick] = []
+    for rank, p in enumerate(pick_meta, start=1):
+        if total_weight > 0 and p["last_close"] > 0 and p["raw_weight"] > 0:
+            weight_pct = (p["raw_weight"] / total_weight) * 100.0
+            alloc = slice_budget * (p["raw_weight"] / total_weight)
+            qty = max(1, int(alloc / p["last_close"]))
+        else:
+            weight_pct = 0.0
+            qty = 0
+        notional = qty * p["last_close"]
+        picks.append(NextDayPick(
+            rank=rank, symbol=p["symbol"],
+            predicted_return=p["predicted_return"],
+            top_quintile_proba=p["top_q"], bottom_quintile_proba=p["bot_q"],
+            combined_score=p["combined_score"], last_close=p["last_close"],
+            atr_14=p["atr_14"], planned_qty=qty, planned_notional=notional,
+            planned_weight_pct=weight_pct,
+            rolling_low_stop=p["rolling_low_stop"],
+            broken_support=p["broken_support"],
+        ))
+
+    return NextDayPicksResponse(
+        as_of=as_of_d, target_trade_date=target_trade_date,
+        nav=nav, slice_budget=slice_budget, universe=universe, picks=picks,
+    )
