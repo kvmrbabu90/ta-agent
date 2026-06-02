@@ -47,10 +47,18 @@ start "Kubera-Frontend" /min cmd /k "cd /d %FRONTEND% && npm run dev"
 REM --- Backup daemon --------------------------------------------------------
 start "Kubera-Backup" /min cmd /k "cd /d %ROOT% && %VENV_PY% -m scripts.backup_predictions_loop --interval 1800 --keep 24"
 
-echo Launched three minimized windows:
-echo   Kubera-API       (FastAPI on http://localhost:8000)
-echo   Kubera-Frontend  (dashboard on http://localhost:5173)
-echo   Kubera-Backup    (snapshots predictions.sqlite every 30 min)
+REM --- Pipeline scheduler ---------------------------------------------------
+REM Fires the 08:35 CT and 17:00 CT daily ticks (OHLCV refresh + predictions
+REM + paper backtest) plus nightly ingest/predict/settlement jobs and the
+REM monthly-retrain cron. Without this running, Paper Trade and Live WF
+REM tabs stop updating with fresh data.
+start "Kubera-Scheduler" /min cmd /k "cd /d %ROOT% && %VENV_PY% -m jobs.scheduler"
+
+echo Launched four minimized windows:
+echo   Kubera-API        (FastAPI on http://localhost:8000)
+echo   Kubera-Frontend   (dashboard on http://localhost:5173)
+echo   Kubera-Backup     (snapshots predictions.sqlite every 30 min)
+echo   Kubera-Scheduler  (daily pipeline at 08:35 + 17:00 CT)
 echo.
 
 REM Give Vite a few seconds to spin up before opening the browser.

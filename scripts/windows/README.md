@@ -6,10 +6,13 @@ No PowerShell, no terminal commands — just double-click.
 ## Quick start
 
 1. **Double-click [`start_kubera.cmd`](start_kubera.cmd)** in this folder.
-2. Three small windows pop to your taskbar (minimized):
+2. Four small windows pop to your taskbar (minimized):
    - **Kubera-API** — the FastAPI backend on `http://localhost:8000`
    - **Kubera-Frontend** — the React/Vite dashboard on `http://localhost:5173`
    - **Kubera-Backup** — snapshots `predictions.sqlite` every 30 min
+   - **Kubera-Scheduler** — fires the daily pipeline at 08:35 and 17:00 CT
+     (OHLCV refresh + predictions + paper backtest). Without this, the
+     Paper Trade and Live WF tabs stop updating with fresh data.
 3. Your default browser opens to `http://localhost:5173`. That's it.
 
 To stop everything, **double-click [`stop_kubera.cmd`](stop_kubera.cmd)**.
@@ -55,7 +58,8 @@ The shortcut created by `install_autostart.cmd` is set to **WindowStyle=7 (minim
 
 | File | Purpose |
 |---|---|
-| [`start_kubera.cmd`](start_kubera.cmd) | Main launcher. Starts API + frontend + backup, opens browser. |
+| [`start_kubera.cmd`](start_kubera.cmd) | Main launcher. Starts API + frontend + backup + scheduler, opens browser. |
+| [`start_scheduler.cmd`](start_scheduler.cmd) | Standalone scheduler launcher — double-click to add the scheduler to a running stack without touching anything else. |
 | [`api_loop.cmd`](api_loop.cmd) | Auto-restart wrapper for the API; called by `start_kubera.cmd`. |
 | [`stop_kubera.cmd`](stop_kubera.cmd) | Kills all Kubera processes (including the Alpaca engine if it's running). |
 | [`install_autostart.cmd`](install_autostart.cmd) | One-time setup: launch Kubera on every Windows login. |
