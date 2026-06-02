@@ -1072,6 +1072,7 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
             #    (per spec — gaps/slippage explicitly ignored).
             if cfg.stop_loss_enabled:
                 survivors: list[_Lot] = []
+                stopped_lots: list[_Lot] = []
                 for lot in open_lots:
                     if lot.stop_level is None:
                         survivors.append(lot)
@@ -1086,9 +1087,23 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
                             paper_conn, cfg, d, lot, bars, cash, realized_pnl,
                             side="stop_close", at_price=lot.stop_level,
                         )
+                        stopped_lots.append(lot)
                     else:
                         survivors.append(lot)
                 open_lots = survivors
+
+                # Clean up the position snapshot written in step 4 — stopped
+                # lots are no longer held at end-of-day. Without this delete,
+                # the dashboard shows the same name in both "Open positions"
+                # (today's snapshot, captured pre-stop) AND "Recent closes"
+                # (the stop_close trade row written by _close_lot above).
+                for lot in stopped_lots:
+                    paper_conn.execute(
+                        "DELETE FROM paper_positions "
+                        "WHERE run_id = ? AND trade_date = ? "
+                        "  AND lot_id = ? AND symbol = ?",
+                        (cfg.run_id, d.isoformat(), lot.lot_id, lot.symbol),
+                    )
 
             # 6) Margin interest. If we're carrying a debit balance (cash
             # negative because positions are sized via leverage_multiplier > 1),
