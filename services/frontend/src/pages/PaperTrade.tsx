@@ -929,13 +929,13 @@ function NextDayPicksTable({
                     </th>
                     <th
                       className="px-2 py-1 text-right"
-                      title="Planned dollar allocation = slice_budget × (score/ATR) / Σ(score/ATR). Inverse-vol weighting: low-ATR names get more capital."
+                      title="Allocation as % of total equity (NAV). At steady-state 25 lots, each lot averages 4% NAV; the inverse-vol weighting concentrates more capital into low-ATR names so individual lot weights range roughly 1-10% NAV. Hover over a row to see the $ value."
                     >
-                      $
+                      %NAV
                     </th>
                     <th
                       className="px-2 py-1 text-right"
-                      title="% of slice budget allocated to this pick."
+                      title="% of slice budget allocated to this pick (slice = NAV / 5). Sums to 100% across the 5 picks. The within-slice inverse-vol weight."
                     >
                       Wt
                     </th>
@@ -954,8 +954,13 @@ function NextDayPicksTable({
                       <td className="px-2 py-1.5 text-right font-mono text-gray-400">
                         {(p.combined_score * 100).toFixed(3)}%
                       </td>
-                      <td className="px-2 py-1.5 text-right font-mono text-gray-300">
-                        {sym}{Math.round(p.planned_notional).toLocaleString()}
+                      <td
+                        className="px-2 py-1.5 text-right font-mono text-gray-300"
+                        title={`${sym}${Math.round(p.planned_notional).toLocaleString()} of ${sym}${Math.round(picks.nav).toLocaleString()} NAV`}
+                      >
+                        {picks.nav > 0
+                          ? `${(p.planned_notional / picks.nav * 100).toFixed(2)}%`
+                          : '—'}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono text-gray-400">
                         {p.planned_weight_pct.toFixed(1)}%
