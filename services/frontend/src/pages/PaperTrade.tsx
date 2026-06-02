@@ -935,12 +935,6 @@ function NextDayPicksTable({
                     </th>
                     <th
                       className="px-2 py-1 text-right"
-                      title="% of slice budget allocated to this pick (slice = NAV / 5). Sums to 100% across the 5 picks. The within-slice inverse-vol weight."
-                    >
-                      Wt
-                    </th>
-                    <th
-                      className="px-2 py-1 text-right"
                       title="3-day rolling-low × 0.997 — the protective stop. 'brk' = broken support (rolling-low ≥ last close): no stop placed, lot relies on 5-day expiry."
                     >
                       Stop
@@ -961,9 +955,6 @@ function NextDayPicksTable({
                         {picks.nav > 0
                           ? `${(p.planned_notional / picks.nav * 100).toFixed(2)}%`
                           : '—'}
-                      </td>
-                      <td className="px-2 py-1.5 text-right font-mono text-gray-400">
-                        {p.planned_weight_pct.toFixed(1)}%
                       </td>
                       <td
                         className={`px-2 py-1.5 text-right font-mono ${p.broken_support ? 'text-amber-400' : 'text-amber-400/80'}`}
