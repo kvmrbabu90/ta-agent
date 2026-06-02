@@ -582,7 +582,14 @@ function SortableTh<K extends string>({
 
 type PositionSortKey =
   | 'symbol' | 'qty' | 'entry' | 'entry_date' | 'lots'
-  | 'planned_exit' | 'stop' | 'last' | 'pnl';
+  | 'planned_exit' | 'stop' | 'last' | 'pnl' | 'pnl_pct';
+
+// Compute % return from entry to last. For multi-lot positions entry_price
+// is the qty-weighted average (API-side). pct = (last - entry) / entry × 100.
+function positionPctReturn(p: PaperPosition): number | null {
+  if (p.last_price == null || !p.entry_price) return null;
+  return ((p.last_price - p.entry_price) / p.entry_price) * 100;
+}
 
 const POSITION_ACCESSORS: Record<PositionSortKey, (p: PaperPosition) => SortValue> = {
   symbol: (p) => p.symbol,
@@ -594,6 +601,7 @@ const POSITION_ACCESSORS: Record<PositionSortKey, (p: PaperPosition) => SortValu
   stop: (p) => p.stop_level,
   last: (p) => p.last_price,
   pnl: (p) => p.unrealized_pnl,
+  pnl_pct: (p) => positionPctReturn(p),
 };
 
 function PositionsTable({ positions, currency }: { positions: PaperPosition[]; currency: Currency }) {
@@ -642,16 +650,26 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
               />
               <SortableTh label="Last" sortKey="last" align="right" sort={sort} onSort={toggle} />
               <SortableTh label="P&L" sortKey="pnl" align="right" sort={sort} onSort={toggle} />
+              <SortableTh
+                label="% Ret" sortKey="pnl_pct" align="right" sort={sort} onSort={toggle}
+                title="Unrealized return = (last_price − entry_price) / entry_price × 100. For multi-lot symbols entry_price is the qty-weighted average across lots."
+              />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
             {rows.map((p) => {
               const isPosPnl = p.unrealized_pnl >= 0;
+              const pct = positionPctReturn(p);
               return (
                 <tr key={p.symbol} className="hover:bg-gray-900/80">
                   <td className="px-3 py-2 font-mono text-gray-100">{p.symbol}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">{p.qty.toFixed(3)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-400">{sym}{p.entry_price.toFixed(2)}</td>
+                  <td
+                    className="px-3 py-2 text-right font-mono text-gray-400"
+                    title={p.lot_count > 1 ? `qty-weighted avg across ${p.lot_count} lots` : undefined}
+                  >
+                    {sym}{p.entry_price.toFixed(2)}
+                  </td>
                   <td className="px-3 py-2 text-right font-mono text-gray-500">{p.entry_date}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-300">{p.lot_count}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-500">
@@ -666,6 +684,9 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
                   <td className={`px-3 py-2 text-right font-mono ${isPosPnl ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {signedMoneyFmt(p.unrealized_pnl, currency)}
                   </td>
+                  <td className={`px-3 py-2 text-right font-mono ${pct == null ? 'text-gray-500' : pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                  </td>
                 </tr>
               );
             })}
@@ -677,7 +698,18 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
 }
 
 type TradeSortKey =
-  | 'date' | 'symbol' | 'action' | 'entry_date' | 'entry' | 'price' | 'realized';
+  | 'date' | 'symbol' | 'action' | 'entry_date' | 'entry' | 'price' | 'realized' | 'realized_pct';
+
+// % return on a closing trade. Long: (exit - entry) / entry. Doesn't apply
+// to OPEN rows (no realized P&L yet).
+function tradePctReturn(t: PaperTrade): number | null {
+  if (t.side.endsWith('_open')) return null;
+  if (t.entry_price == null || !t.entry_price) return null;
+  const isLong = t.side.startsWith('long');
+  return isLong
+    ? ((t.fill_price - t.entry_price) / t.entry_price) * 100
+    : ((t.entry_price - t.fill_price) / t.entry_price) * 100;
+}
 
 const TRADE_ACCESSORS: Record<TradeSortKey, (t: PaperTrade) => SortValue> = {
   date: (t) => t.trade_date,
@@ -687,6 +719,7 @@ const TRADE_ACCESSORS: Record<TradeSortKey, (t: PaperTrade) => SortValue> = {
   entry: (t) => t.entry_price,
   price: (t) => t.fill_price,
   realized: (t) => t.realized_pnl,
+  realized_pct: (t) => tradePctReturn(t),
 };
 
 function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading: boolean; currency: Currency }) {
@@ -719,6 +752,10 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
                 <SortableTh label="Entry" sortKey="entry" align="right" sort={sort} onSort={toggle} />
                 <SortableTh label="Price" sortKey="price" align="right" sort={sort} onSort={toggle} />
                 <SortableTh label="Realized" sortKey="realized" align="right" sort={sort} onSort={toggle} />
+                <SortableTh
+                  label="% Ret" sortKey="realized_pct" align="right" sort={sort} onSort={toggle}
+                  title="Realized return = (exit_price − entry_price) / entry_price × 100. Per-lot — entry_price here is the specific lot's open price, not a portfolio average."
+                />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
@@ -726,6 +763,7 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
                 const isLong = t.side.startsWith('long');
                 const isOpen = t.side.endsWith('_open');
                 const realized = t.realized_pnl ?? 0;
+                const pct = tradePctReturn(t);
                 return (
                   <tr key={`${t.trade_date}-${t.symbol}-${t.side}-${i}`} className="hover:bg-gray-900/80">
                     <td className="px-3 py-2 font-mono text-gray-400">{t.trade_date}</td>
@@ -752,6 +790,13 @@ function RecentTrades({ data, loading, currency }: { data: PaperTrade[]; loading
                         realized >= 0 ? 'text-emerald-400' : 'text-rose-400',
                     ].join(' ')}>
                       {isOpen ? '—' : signedMoneyFmt(realized, currency)}
+                    </td>
+                    <td className={[
+                      'px-3 py-2 text-right font-mono',
+                      isOpen || pct == null ? 'text-gray-500' :
+                        pct >= 0 ? 'text-emerald-400' : 'text-rose-400',
+                    ].join(' ')}>
+                      {isOpen || pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
                     </td>
                   </tr>
                 );
