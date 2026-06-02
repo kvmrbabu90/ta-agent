@@ -908,6 +908,14 @@ function NextDayPicksTable({
               {' · '}NAV <span className="font-mono text-gray-300">{moneyFmt(picks.nav, currency, 0)}</span>
               {' · '}slice <span className="font-mono text-gray-300">{moneyFmt(picks.slice_budget, currency, 0)}</span>
             </div>
+            {picks.as_of === new Date().toISOString().slice(0, 10) && (
+              <div
+                className="mb-2 rounded border border-amber-700/50 bg-amber-900/20 px-2 py-1 text-[10px] text-amber-200"
+                title="The 08:35 CT pipeline tick generates predictions using today's morning data. The strategy's actual trades come from the 17:00 CT post-close run, which can produce a different top-5. Trust the post-17:00 CT picks for what will trade tomorrow."
+              >
+                preliminary — final picks land after 17:00 CT
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-sm whitespace-nowrap">
                 <thead className="text-[11px] uppercase tracking-wider text-gray-500">
@@ -919,17 +927,9 @@ function NextDayPicksTable({
                     >
                       Score
                     </th>
-                    <th className="px-2 py-1 text-right">Close</th>
                     <th
                       className="px-2 py-1 text-right"
-                      title="14-day Wilder ATR. Used as the inverse-vol denominator in the slice allocation."
-                    >
-                      ATR
-                    </th>
-                    <th className="px-2 py-1 text-right">Qty</th>
-                    <th
-                      className="px-2 py-1 text-right"
-                      title="Planned dollar allocation = slice_budget × (score/ATR) / Σ(score/ATR)."
+                      title="Planned dollar allocation = slice_budget × (score/ATR) / Σ(score/ATR). Inverse-vol weighting: low-ATR names get more capital."
                     >
                       $
                     </th>
@@ -941,7 +941,7 @@ function NextDayPicksTable({
                     </th>
                     <th
                       className="px-2 py-1 text-right"
-                      title="3-day rolling-low × 0.997 — the protective stop. Empty when the stock has gapped below prior support (no stop placed; lot relies on 5-day expiry)."
+                      title="3-day rolling-low × 0.997 — the protective stop. 'brk' = broken support (rolling-low ≥ last close): no stop placed, lot relies on 5-day expiry."
                     >
                       Stop
                     </th>
@@ -953,15 +953,6 @@ function NextDayPicksTable({
                       <td className="px-2 py-1.5 font-mono text-gray-100">{p.symbol}</td>
                       <td className="px-2 py-1.5 text-right font-mono text-gray-400">
                         {(p.combined_score * 100).toFixed(3)}%
-                      </td>
-                      <td className="px-2 py-1.5 text-right font-mono text-gray-300">
-                        {sym}{p.last_close.toFixed(2)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right font-mono text-gray-500">
-                        {p.atr_14 != null ? `${sym}${p.atr_14.toFixed(2)}` : '—'}
-                      </td>
-                      <td className="px-2 py-1.5 text-right font-mono text-gray-300">
-                        {p.planned_qty}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono text-gray-300">
                         {sym}{Math.round(p.planned_notional).toLocaleString()}
