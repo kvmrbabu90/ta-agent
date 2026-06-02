@@ -274,12 +274,26 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
   // Intraday P&L only becomes meaningful once the close (post-5pm) snapshot
   // lands. Decompose the open→close equity change into realized and
   // unrealized deltas using the cumulative figures on each snapshot.
+  //
+  // % returns are computed against the start-of-day equity (8am snapshot),
+  // so they answer "what % move did the strategy generate TODAY" — not
+  // since-inception. Denominator falls back to starting_cash if equity is
+  // somehow 0 (shouldn't happen but defensive).
   const intraday = open8am && close5pm
-    ? {
-        total: close5pm.equity - open8am.equity,
-        realized: close5pm.realized_pnl - open8am.realized_pnl,
-        unrealized: close5pm.unrealized_pnl - open8am.unrealized_pnl,
-      }
+    ? (() => {
+        const totalD = close5pm.equity - open8am.equity;
+        const realizedD = close5pm.realized_pnl - open8am.realized_pnl;
+        const unrealizedD = close5pm.unrealized_pnl - open8am.unrealized_pnl;
+        const denom = open8am.equity > 0 ? open8am.equity : starting_cash;
+        return {
+          total: totalD,
+          realized: realizedD,
+          unrealized: unrealizedD,
+          totalPct: denom > 0 ? (totalD / denom) * 100 : null,
+          realizedPct: denom > 0 ? (realizedD / denom) * 100 : null,
+          unrealizedPct: denom > 0 ? (unrealizedD / denom) * 100 : null,
+        };
+      })()
     : null;
 
   return (
@@ -325,18 +339,33 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
                 intraday.total >= 0 ? 'text-emerald-400' : 'text-rose-400',
               ].join(' ')}>
                 {signedMoneyFmt(intraday.total, currency)}
+                {intraday.totalPct != null && (
+                  <span className="ml-2 text-base font-normal opacity-80">
+                    ({intraday.totalPct >= 0 ? '+' : ''}{intraday.totalPct.toFixed(2)}%)
+                  </span>
+                )}
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-gray-500">
                 <span>
                   realized{' '}
                   <span className={intraday.realized >= 0 ? 'text-emerald-400/80' : 'text-rose-400/80'}>
                     {signedMoneyFmt(intraday.realized, currency)}
+                    {intraday.realizedPct != null && (
+                      <span className="ml-1 opacity-70">
+                        ({intraday.realizedPct >= 0 ? '+' : ''}{intraday.realizedPct.toFixed(2)}%)
+                      </span>
+                    )}
                   </span>
                 </span>
                 <span>
                   unrealized{' '}
                   <span className={intraday.unrealized >= 0 ? 'text-emerald-400/80' : 'text-rose-400/80'}>
                     {signedMoneyFmt(intraday.unrealized, currency)}
+                    {intraday.unrealizedPct != null && (
+                      <span className="ml-1 opacity-70">
+                        ({intraday.unrealizedPct >= 0 ? '+' : ''}{intraday.unrealizedPct.toFixed(2)}%)
+                      </span>
+                    )}
                   </span>
                 </span>
               </div>
