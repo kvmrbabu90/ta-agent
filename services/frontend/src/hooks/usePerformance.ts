@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import {
-  fetchModelInfo,
-  fetchPerformance,
   fetchStrictWf,
   fetchStrictWfAnalysis,
   fetchStrictWfMonth,
-  fetchWalkforward,
 } from '@/api/performance';
+
+// Strict walk-forward hooks used by the Live WF tab. The legacy
+// usePerformance / useModelInfo / useWalkforward hooks were removed
+// alongside the Performance tab on 2026-06-02 — the Live WF tab
+// covers all backtest-performance views now.
 
 export function useStrictWf(universe: string, refetchMs = 60_000) {
   return useQuery({
@@ -39,32 +41,5 @@ export function useStrictWfAnalysis(universe: string, refetchMs = 60_000) {
     enabled: Boolean(universe),
     refetchInterval: refetchMs,
     staleTime: 30_000,
-  });
-}
-
-export function usePerformance(universe: string, lookbackDays = 90) {
-  return useQuery({
-    queryKey: ['performance', universe, lookbackDays],
-    queryFn: () => fetchPerformance(universe, lookbackDays),
-    enabled: Boolean(universe),
-    staleTime: 60_000,
-  });
-}
-
-export function useModelInfo(universe: string) {
-  return useQuery({
-    queryKey: ['model-info', universe],
-    queryFn: () => fetchModelInfo(universe),
-    enabled: Boolean(universe),
-    staleTime: 5 * 60_000,
-  });
-}
-
-export function useWalkforward(universe: string) {
-  return useQuery({
-    queryKey: ['walkforward', universe],
-    queryFn: () => fetchWalkforward(universe),
-    enabled: Boolean(universe),
-    staleTime: 5 * 60_000,
   });
 }

@@ -4,7 +4,6 @@ import { DashboardPage } from '@/pages/Dashboard';
 import { LiveWFPage } from '@/pages/LiveWF';
 import { LiveAlpacaPage } from '@/pages/LiveAlpaca';
 import { PaperTradePage } from '@/pages/PaperTrade';
-import { PerformancePage } from '@/pages/Performance';
 import { SettingsPage } from '@/pages/Settings';
 import { StockDetailPage } from '@/pages/StockDetail';
 
@@ -14,7 +13,6 @@ export function App() {
       <Routes>
         <Route path="/" element={<DashboardPage />} />
         <Route path="/stocks/:universe/:symbol" element={<StockDetailPage />} />
-        <Route path="/performance" element={<PerformancePage />} />
         <Route path="/live-wf" element={<LiveWFPage />} />
         <Route path="/paper" element={<PaperTradePage />} />
         <Route path="/live-alpaca" element={<LiveAlpacaPage />} />

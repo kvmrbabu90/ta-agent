@@ -1,12 +1,14 @@
 import { apiGet } from './client';
 import type {
-  ModelInfoResponse,
-  PerformanceResponse,
   StrictWfAnalysisResponse,
   StrictWfMonthDetail,
   StrictWfResponse,
-  WalkforwardResponse,
 } from './types';
+
+// Strict walk-forward fetchers used by the Live WF tab. The legacy
+// /performance/{universe}, /performance/model/, /performance/walkforward/
+// fetchers were removed alongside the Performance tab on 2026-06-02 —
+// the Live WF tab covers all backtest-performance views now.
 
 export function fetchStrictWf(universe: string): Promise<StrictWfResponse> {
   return apiGet<StrictWfResponse>(`/performance/strict-wf/${encodeURIComponent(universe)}`);
@@ -28,21 +30,4 @@ export function fetchStrictWfAnalysis(
   return apiGet<StrictWfAnalysisResponse>(
     `/performance/strict-wf/${encodeURIComponent(universe)}/analysis`,
   );
-}
-
-export function fetchPerformance(
-  universe: string,
-  lookbackDays = 90,
-): Promise<PerformanceResponse> {
-  return apiGet<PerformanceResponse>(`/performance/${encodeURIComponent(universe)}`, {
-    lookback_days: lookbackDays,
-  });
-}
-
-export function fetchModelInfo(universe: string): Promise<ModelInfoResponse> {
-  return apiGet<ModelInfoResponse>(`/performance/model/${encodeURIComponent(universe)}`);
-}
-
-export function fetchWalkforward(universe: string): Promise<WalkforwardResponse> {
-  return apiGet<WalkforwardResponse>(`/performance/walkforward/${encodeURIComponent(universe)}`);
 }
