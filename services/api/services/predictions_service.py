@@ -139,6 +139,18 @@ def get_top_picks(
             date.fromisoformat(row[0]) if isinstance(row[0], str) else row[0]
         )
 
+    # Conviction-weighted ranking — matches Kubera V1 strategy spec.
+    # combined_score = predicted_return × (1 + direction_agreement)
+    # where direction_agreement = top_q_proba − bot_q_proba.
+    #
+    # This is what the simulator (packages/paper_trading/engine.py),
+    # the live Alpaca engine (services/alpaca/engine.py), and the
+    # /paper/next-day-picks endpoint all use. Ranking the Dashboard's
+    # Top picks by raw predicted_return surfaces names where the
+    # classification head disagrees with the regression head (e.g.
+    # NTAP with top_q=0.31 / bot_q=0.39 — classifier puts it in the
+    # bottom quintile despite a positive regression pred). The conviction
+    # weighting correctly demotes those.
     order = "DESC" if direction == "long" else "ASC"
     rows = sqlite_conn.execute(
         f"""
@@ -147,7 +159,9 @@ def get_top_picks(
                model_version_regression, model_version_classification
         FROM predictions_log
         WHERE universe = ? AND as_of = ?
-        ORDER BY predicted_return {order}
+        ORDER BY predicted_return * (1.0 + (COALESCE(top_quintile_proba, 0.0)
+                                            - COALESCE(bottom_quintile_proba, 0.0))) {order},
+                 symbol ASC
         LIMIT ?
         """,
         [universe, as_of.isoformat() if isinstance(as_of, date) else as_of, limit],
