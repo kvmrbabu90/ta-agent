@@ -908,14 +908,35 @@ function NextDayPicksTable({
               {' · '}NAV <span className="font-mono text-gray-300">{moneyFmt(picks.nav, currency, 0)}</span>
               {' · '}slice <span className="font-mono text-gray-300">{moneyFmt(picks.slice_budget, currency, 0)}</span>
             </div>
-            {picks.as_of === new Date().toISOString().slice(0, 10) && (
-              <div
-                className="mb-2 rounded border border-amber-700/50 bg-amber-900/20 px-2 py-1 text-[10px] text-amber-200"
-                title="The 08:35 CT pipeline tick generates predictions using today's morning data. The strategy's actual trades come from the 17:00 CT post-close run, which can produce a different top-5. Trust the post-17:00 CT picks for what will trade tomorrow."
-              >
-                preliminary — final picks land after 17:00 CT
-              </div>
-            )}
+            {(() => {
+              // "Preliminary" = the predictions row for this as_of was
+              // last written by the 08:35 CT morning tick (i.e. BEFORE
+              // ~21:30 UTC, which is the typical 16:30 CT post-close
+              // completion time). Once the 17:00 CT tick writes its
+              // refreshed batch, the timestamp jumps forward and we
+              // show "final" instead.
+              const written = picks.predictions_written_at;
+              if (!written) return null;
+              const writeHourUtc = new Date(written + 'Z').getUTCHours();
+              // Heuristic: writes before 20:00 UTC = morning preliminary;
+              // 20:00+ UTC ≈ 15:00 CT or later = post-close final.
+              const isPreliminary = writeHourUtc < 20;
+              return isPreliminary ? (
+                <div
+                  className="mb-2 rounded border border-amber-700/50 bg-amber-900/20 px-2 py-1 text-[10px] text-amber-200"
+                  title={`Last write to predictions_log: ${written} UTC. The 08:35 CT pipeline tick generates picks from today's morning data; the 17:00 CT post-close tick overwrites with the canonical end-of-day batch. The post-17:00 CT picks are what actually drive tomorrow's trades.`}
+                >
+                  preliminary — final picks land after 17:00 CT
+                </div>
+              ) : (
+                <div
+                  className="mb-2 rounded border border-emerald-700/50 bg-emerald-900/20 px-2 py-1 text-[10px] text-emerald-200"
+                  title={`Last write to predictions_log: ${written} UTC (post-close 17:00 CT tick).`}
+                >
+                  final — post-close picks
+                </div>
+              );
+            })()}
             <div className="overflow-x-auto">
               <table className="w-full text-sm whitespace-nowrap">
                 <thead className="text-[11px] uppercase tracking-wider text-gray-500">

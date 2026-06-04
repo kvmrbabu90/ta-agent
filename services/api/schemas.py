@@ -316,6 +316,12 @@ class NextDayPicksResponse(_BaseResponse):
     slice_budget: float
     universe: str
     picks: list[NextDayPick] = Field(default_factory=list)
+    # When the latest write to predictions_log for this as_of happened in
+    # UTC. The 08:35 CT preliminary batch and the 17:00 CT post-close batch
+    # share the same as_of; this lets the dashboard distinguish "morning
+    # preliminary" from "evening final" (preliminary if last_write < 21:30
+    # UTC ≈ 16:30 CT, final after that).
+    predictions_written_at: str | None = None
 
 
 # ---------------------------------------------------------------------------

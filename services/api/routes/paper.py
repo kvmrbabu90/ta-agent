@@ -545,6 +545,13 @@ def next_day_picks(
             "ORDER BY combined_score DESC, symbol ASC LIMIT ?",
             (universe, latest_as_of, _TOP_N_PICKS),
         ).fetchall()
+        # Latest write timestamp for this as_of (UTC ISO). Lets the dashboard
+        # distinguish morning-preliminary from evening-final.
+        last_write_row = pred_conn.execute(
+            "SELECT MAX(created_at) FROM predictions_log WHERE universe = ? AND as_of = ?",
+            (universe, latest_as_of),
+        ).fetchone()
+        last_write = last_write_row[0] if last_write_row else None
     finally:
         pred_conn.close()
 
@@ -568,6 +575,7 @@ def next_day_picks(
         return NextDayPicksResponse(
             as_of=as_of_d, target_trade_date=target_trade_date,
             nav=nav, slice_budget=slice_budget, universe=universe, picks=[],
+            predictions_written_at=last_write if 'last_write' in dir() else None,
         )
 
     # --- OHLCV for ATR + rolling-low ---
@@ -645,4 +653,5 @@ def next_day_picks(
     return NextDayPicksResponse(
         as_of=as_of_d, target_trade_date=target_trade_date,
         nav=nav, slice_budget=slice_budget, universe=universe, picks=picks,
+        predictions_written_at=last_write,
     )

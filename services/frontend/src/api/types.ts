@@ -395,6 +395,11 @@ export interface NextDayPicksResponse {
   slice_budget: number;
   universe: string;
   picks: NextDayPick[];
+  // ISO-UTC timestamp of the latest write to predictions_log for this
+  // as_of. The 08:35 CT preliminary batch and the 17:00 CT post-close
+  // batch share the same as_of; this lets the dashboard show whether
+  // the picks are preliminary or final.
+  predictions_written_at: string | null;
 }
 
 // --- System status -----------------------------------------------------------

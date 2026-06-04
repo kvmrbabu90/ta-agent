@@ -81,7 +81,13 @@ def log_predictions(
             top_quintile_proba = excluded.top_quintile_proba,
             bottom_quintile_proba = excluded.bottom_quintile_proba,
             model_version_regression = excluded.model_version_regression,
-            model_version_classification = excluded.model_version_classification
+            model_version_classification = excluded.model_version_classification,
+            -- Refresh created_at on upsert so MAX(created_at) reflects the
+            -- LATEST write (08:35 CT morning preliminary OR 17:00 CT post-
+            -- close final). Without this the timestamp is stuck at first
+            -- write and you can't tell from the DB whether you're looking
+            -- at the preliminary or final batch.
+            created_at = excluded.created_at
     """
 
     with get_sqlite_conn(sqlite_path) as conn:
