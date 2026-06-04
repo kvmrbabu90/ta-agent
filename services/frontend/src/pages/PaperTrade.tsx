@@ -446,17 +446,33 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
   starting: number;
   currency: Currency;
 }) {
+  // Normalize all lines to a $1,000 starting base. Easier to compare
+  // strategy vs benchmark vs after-tax across runs of different starting
+  // capital ($1k WF runs, $200k live paper, future arbitrary sizes) —
+  // the curves all start at $1,000 and you read the y-axis as "multiple
+  // of starting capital × $1,000". Tooltip shows the actual dollar value
+  // alongside so the original information isn't lost.
+  const SCALE_BASE = 1000;
+  const scale = starting > 0 ? SCALE_BASE / starting : 1;
   const series = useMemo(() => {
     const closeOnly = points.filter((p) => p.snapshot_kind === 'close_5pm_ct');
     const benchByDate = new Map((benchPoints ?? []).map((b) => [b.trade_date, b.equity]));
     const postByDate = new Map((postTaxPoints ?? []).map((b) => [b.trade_date, b.equity]));
-    return closeOnly.map((p) => ({
-      date: p.trade_date,
-      Strategy: p.equity,
-      Bench: benchByDate.get(p.trade_date) ?? null,
-      'After tax': postByDate.get(p.trade_date) ?? null,
-    }));
-  }, [points, benchPoints, postTaxPoints]);
+    return closeOnly.map((p) => {
+      const benchActual = benchByDate.get(p.trade_date) ?? null;
+      const postActual = postByDate.get(p.trade_date) ?? null;
+      return {
+        date: p.trade_date,
+        Strategy: p.equity * scale,
+        Bench: benchActual == null ? null : benchActual * scale,
+        'After tax': postActual == null ? null : postActual * scale,
+        // Carry the actual-dollar values for the tooltip.
+        _stratActual: p.equity,
+        _benchActual: benchActual,
+        _postActual: postActual,
+      };
+    });
+  }, [points, benchPoints, postTaxPoints, scale]);
   if (series.length === 0) return null;
   const sym = currencySymbol(currency);
   // Decide whether to render bench / post-tax. Bench is opt-in; post-tax
@@ -483,14 +499,28 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
             tickFormatter={(v) => `${sym}${v.toFixed(0)}`}
           />
           <Tooltip
-            formatter={(v: number) => moneyFmt(v, currency)}
+            // Show normalized value × multiplier of starting → user reads
+            // "$998 (-0.20%) [actual $199,600]" instead of an unscaled number.
+            formatter={(v: number, name: string, item: { payload?: Record<string, number | null> }) => {
+              const actualKey = name === 'Strategy' ? '_stratActual'
+                : name === 'After tax' ? '_postActual'
+                : '_benchActual';
+              const actual = item?.payload?.[actualKey];
+              const pct = (v / SCALE_BASE - 1) * 100;
+              const pctStr = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+              const normStr = moneyFmt(v, currency);
+              const actualStr = actual != null
+                ? ` [actual ${moneyFmt(actual, currency, 0)}]`
+                : '';
+              return [`${normStr} (${pctStr})${actualStr}`, name];
+            }}
             labelFormatter={(d) => `Date: ${d}`}
           />
           <ReferenceLine
-            y={starting}
+            y={SCALE_BASE}
             stroke="#6b7280"
             strokeDasharray="3 3"
-            label={{ value: `start ${moneyFmt(starting, currency, 0)}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
+            label={{ value: `start ${moneyFmt(SCALE_BASE, currency, 0)}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
           />
           {/* Strategy pre-tax (IBKR Lite fees already deducted by the
               paper engine) — primary solid green line. */}
