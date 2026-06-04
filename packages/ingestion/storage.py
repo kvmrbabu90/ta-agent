@@ -101,6 +101,13 @@ def upsert_ohlcv(df: pd.DataFrame, conn: duckdb.DuckDBPyConnection | None = None
 
     df must have columns matching OHLCV_COLUMNS in packages.common.schemas.
     Returns number of rows written.
+
+    Sanity-validates the incoming frame: any row violating the OHLC
+    invariants (high >= max(open, close, low); low <= min(open, close, high))
+    is DROPPED before insert. yfinance sometimes returns partial-day bars
+    during intraday refreshes where these invariants are violated; those
+    rows are pollution we don't want to keep in the DB. Logged as warnings
+    so they can be diagnosed later.
     """
     if df.empty:
         return 0
@@ -112,6 +119,27 @@ def upsert_ohlcv(df: pd.DataFrame, conn: duckdb.DuckDBPyConnection | None = None
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"OHLCV dataframe missing columns: {missing}")
+
+    # Drop physically-impossible bars (partial-day yfinance reads, etc.)
+    # before insert. Don't fail the whole batch on a few bad rows — log
+    # the symbols/dates and continue.
+    bad_mask = (
+        (df["high"] < df["open"])
+        | (df["high"] < df["close"])
+        | (df["high"] < df["low"])
+        | (df["low"] > df["open"])
+        | (df["low"] > df["close"])
+    )
+    if bad_mask.any():
+        bad = df[bad_mask][["symbol", "bar_date", "open", "high", "low", "close"]]
+        log.warning(
+            f"upsert_ohlcv: dropping {len(bad)} bars violating OHLC invariants "
+            f"(likely partial-day yfinance reads). Sample: "
+            f"{bad.head(3).to_dict('records')}"
+        )
+        df = df[~bad_mask]
+        if df.empty:
+            return 0
 
     own_conn = conn is None
     if own_conn:
@@ -192,7 +220,10 @@ def query_membership_at(
     """
     own_conn = conn is None
     if own_conn:
-        conn = _connect()
+        # Query-only caller: open read-only so it coexists with other
+        # processes holding the DB (e.g. a long-running walk-forward
+        # backtest). A read-write open would block on their handle.
+        conn = _connect(read_only=True)
     try:
         sql = """
             SELECT universe, symbol, exchange, start_date, end_date, company_name

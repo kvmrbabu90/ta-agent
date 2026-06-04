@@ -317,15 +317,31 @@ def daily_update(universe: str, *, duckdb_path: str | None = None) -> dict:
         f"({len(symbols_list)} symbols, end={today})"
     )
 
+    # Overlap window — always re-fetch the most recent N calendar days, even
+    # for symbols whose `last_bar_date` is current. This overwrites any
+    # PARTIAL bar that an earlier intraday refresh wrote with the eventual
+    # end-of-day complete bar.
+    #
+    # Background: the morning 8:35 CT pipeline tick fires ~5 min after market
+    # open. yfinance's daily endpoint called that early can return bars with
+    # stale snapshot prices (open from prior session, high < open, etc.).
+    # Without an overlap window the next refresh skipped that date because
+    # `start = last + 1`, leaving the corrupted bar in place. With overlap=5
+    # the post-close 17:00 CT tick refetches and overwrites.
+    _OVERLAP_DAYS = 5
+
     with get_conn(duckdb_path) as duck:
         for i, sym in enumerate(symbols_list):
             try:
                 last = _last_bar_date_for_symbol(sym, duck)
-                start = (
-                    last + timedelta(days=1)
-                    if last
-                    else today - timedelta(days=60)
-                )
+                if last:
+                    # Re-fetch the trailing window so partial bars get overwritten.
+                    start = max(
+                        last - timedelta(days=_OVERLAP_DAYS),
+                        today - timedelta(days=_OVERLAP_DAYS + 2),
+                    )
+                else:
+                    start = today - timedelta(days=60)
                 if start > today:
                     succeeded += 1
                     continue
