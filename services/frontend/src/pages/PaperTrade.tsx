@@ -940,17 +940,25 @@ function NextDayPicksTable({
             </div>
             {(() => {
               // "Preliminary" = the predictions row for this as_of was
-              // last written by the 08:35 CT morning tick (i.e. BEFORE
-              // ~21:30 UTC, which is the typical 16:30 CT post-close
-              // completion time). Once the 17:00 CT tick writes its
-              // refreshed batch, the timestamp jumps forward and we
-              // show "final" instead.
+              // last written by the morning 08:35 CT tick. "Final" =
+              // last written by the post-close 17:00 CT tick (or any
+              // later manual run).
+              //
+              // Compare write date vs as_of date, NOT raw UTC hour —
+              // a late evening run (e.g. 19:00 CDT) writes at 00:00 UTC
+              // the NEXT day, so a naive hour check would wrongly flag
+              // it as preliminary. Logic:
+              //   - write_date > as_of_date           → FINAL (next-day write)
+              //   - write_date == as_of_date, h < 20  → PRELIMINARY (morning)
+              //   - write_date == as_of_date, h ≥ 20  → FINAL (post-close)
               const written = picks.predictions_written_at;
               if (!written) return null;
-              const writeHourUtc = new Date(written + 'Z').getUTCHours();
-              // Heuristic: writes before 20:00 UTC = morning preliminary;
-              // 20:00+ UTC ≈ 15:00 CT or later = post-close final.
-              const isPreliminary = writeHourUtc < 20;
+              const writeDt = new Date(written + 'Z');
+              const writeDateUtc = writeDt.toISOString().slice(0, 10);
+              const writeHourUtc = writeDt.getUTCHours();
+              const asOfDate = picks.as_of;
+              const isPreliminary =
+                writeDateUtc === asOfDate && writeHourUtc < 20;
               return isPreliminary ? (
                 <div
                   className="mb-2 rounded border border-amber-700/50 bg-amber-900/20 px-2 py-1 text-[10px] text-amber-200"
