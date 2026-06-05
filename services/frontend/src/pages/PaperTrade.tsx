@@ -446,25 +446,21 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
   starting: number;
   currency: Currency;
 }) {
-  // Normalize all lines to a $1,000 starting base. The very first point
-  // is the open_8am_ct snapshot of the first trading day — that's the
-  // morning baseline BEFORE any trades happened, where both Strategy
-  // and SPY equal exactly $1,000. Subsequent points are close_5pm_ct
-  // (one per trading day at 5 PM mark). This gives the chart a clear
-  // story: "both lines started at $1,000 on Day 1 morning, then..."
+  // Equity-curve series. The leftmost point is the open_8am_ct snapshot
+  // of the first trading day — both Strategy and SPY anchored at
+  // starting_cash before any trading. All subsequent points are
+  // close_5pm_ct (one per trading day). Values are ACTUAL DOLLARS to
+  // match the headline NAV / snapshot tiles / intraday P&L (everything
+  // else on the page uses actual dollars; normalising just the chart
+  // creates the headline-vs-chart mismatch the user noticed).
   //
-  // X-axis label encodes AM vs PM so the morning baseline doesn't
-  // collide with the same-day's close on the axis.
-  const SCALE_BASE = 1000;
-  const scale = starting > 0 ? SCALE_BASE / starting : 1;
+  // X-axis labels use "Jun 2 AM" / "Jun 2 PM" so the morning baseline
+  // doesn't collide with same-day's close on the axis.
   const series = useMemo(() => {
     const sorted = [...points].sort((a, b) => {
       if (a.trade_date !== b.trade_date) return a.trade_date < b.trade_date ? -1 : 1;
-      // open_8am_ct sorts before close_5pm_ct on the same date.
       return a.snapshot_kind === 'open_8am_ct' ? -1 : 1;
     });
-    // Use only: the first open_8am_ct (the morning baseline) + all close_5pm_ct.
-    // Intra-day opens for subsequent days are noise on the daily chart.
     const firstOpen = sorted.find((p) => p.snapshot_kind === 'open_8am_ct');
     const closes = sorted.filter((p) => p.snapshot_kind === 'close_5pm_ct');
     const stratPoints = firstOpen ? [firstOpen, ...closes] : closes;
@@ -479,7 +475,6 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
 
     return stratPoints.map((p) => {
       const isAm = p.snapshot_kind === 'open_8am_ct';
-      // Label "Jun 2 AM" / "Jun 2 PM" so AM/PM of the same date don't collide.
       const datePart = p.trade_date;
       const label = `${datePart} ${isAm ? 'AM' : 'PM'}`;
       const benchActual = benchByKey.get(`${datePart}|${p.snapshot_kind}`) ?? null;
@@ -487,15 +482,12 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
       const postActual = isAm ? starting : (postByDate.get(datePart) ?? null);
       return {
         date: label,
-        Strategy: p.equity * scale,
-        Bench: benchActual == null ? null : benchActual * scale,
-        'After tax': postActual == null ? null : postActual * scale,
-        _stratActual: p.equity,
-        _benchActual: benchActual,
-        _postActual: postActual,
+        Strategy: p.equity,
+        Bench: benchActual,
+        'After tax': postActual,
       };
     });
-  }, [points, benchPoints, postTaxPoints, scale, starting]);
+  }, [points, benchPoints, postTaxPoints, starting]);
   if (series.length === 0) return null;
   const sym = currencySymbol(currency);
   // Decide whether to render bench / post-tax. Bench is opt-in; post-tax
@@ -522,28 +514,19 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
             tickFormatter={(v) => `${sym}${v.toFixed(0)}`}
           />
           <Tooltip
-            // Show normalized value × multiplier of starting → user reads
-            // "$998 (-0.20%) [actual $199,600]" instead of an unscaled number.
-            formatter={(v: number, name: string, item: { payload?: Record<string, number | null> }) => {
-              const actualKey = name === 'Strategy' ? '_stratActual'
-                : name === 'After tax' ? '_postActual'
-                : '_benchActual';
-              const actual = item?.payload?.[actualKey];
-              const pct = (v / SCALE_BASE - 1) * 100;
+            // Show actual dollar value + percentage return vs starting cash.
+            formatter={(v: number, name: string) => {
+              const pct = starting > 0 ? ((v / starting - 1) * 100) : 0;
               const pctStr = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
-              const normStr = moneyFmt(v, currency);
-              const actualStr = actual != null
-                ? ` [actual ${moneyFmt(actual, currency, 0)}]`
-                : '';
-              return [`${normStr} (${pctStr})${actualStr}`, name];
+              return [`${moneyFmt(v, currency)} (${pctStr})`, name];
             }}
             labelFormatter={(d) => `Date: ${d}`}
           />
           <ReferenceLine
-            y={SCALE_BASE}
+            y={starting}
             stroke="#6b7280"
             strokeDasharray="3 3"
-            label={{ value: `start ${moneyFmt(SCALE_BASE, currency, 0)}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
+            label={{ value: `start ${moneyFmt(starting, currency, 0)}`, position: 'right', fill: '#6b7280', fontSize: 10 }}
           />
           {/* Strategy pre-tax (IBKR Lite fees already deducted by the
               paper engine) — primary solid green line. */}
