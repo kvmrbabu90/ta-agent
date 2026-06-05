@@ -242,10 +242,16 @@ class PaperTrade(_BaseResponse):
 
 
 class PaperBenchmarkPoint(_BaseResponse):
-    """SPY B&H equity rebased to the paper starting capital. One row per
-    close-of-day snapshot in the paper equity_curve."""
+    """SPY B&H equity rebased to the paper starting capital.
+
+    Two rows per trading day for the first day (open + close); one per
+    day thereafter. The very first point is anchored at the first day's
+    SPY OPEN = starting_cash so the chart's leftmost point matches the
+    strategy's open_8am_ct snapshot at exactly the starting baseline.
+    """
     trade_date: date
     equity: float
+    snapshot_kind: str = "close_5pm_ct"  # 'open_8am_ct' | 'close_5pm_ct'
 
 
 class PaperPostTaxPoint(_BaseResponse):

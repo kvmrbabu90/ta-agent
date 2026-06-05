@@ -440,39 +440,62 @@ function SnapshotCard({ icon, time, label, point, starting, currency }: {
 
 function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting, currency }: {
   points: PaperEquityPoint[];
-  benchPoints?: { trade_date: string; equity: number }[];
+  benchPoints?: { trade_date: string; equity: number; snapshot_kind?: 'open_8am_ct' | 'close_5pm_ct' }[];
   postTaxPoints?: { trade_date: string; equity: number }[];
   benchSymbol?: string | null;
   starting: number;
   currency: Currency;
 }) {
-  // Normalize all lines to a $1,000 starting base. Easier to compare
-  // strategy vs benchmark vs after-tax across runs of different starting
-  // capital ($1k WF runs, $200k live paper, future arbitrary sizes) —
-  // the curves all start at $1,000 and you read the y-axis as "multiple
-  // of starting capital × $1,000". Tooltip shows the actual dollar value
-  // alongside so the original information isn't lost.
+  // Normalize all lines to a $1,000 starting base. The very first point
+  // is the open_8am_ct snapshot of the first trading day — that's the
+  // morning baseline BEFORE any trades happened, where both Strategy
+  // and SPY equal exactly $1,000. Subsequent points are close_5pm_ct
+  // (one per trading day at 5 PM mark). This gives the chart a clear
+  // story: "both lines started at $1,000 on Day 1 morning, then..."
+  //
+  // X-axis label encodes AM vs PM so the morning baseline doesn't
+  // collide with the same-day's close on the axis.
   const SCALE_BASE = 1000;
   const scale = starting > 0 ? SCALE_BASE / starting : 1;
   const series = useMemo(() => {
-    const closeOnly = points.filter((p) => p.snapshot_kind === 'close_5pm_ct');
-    const benchByDate = new Map((benchPoints ?? []).map((b) => [b.trade_date, b.equity]));
+    const sorted = [...points].sort((a, b) => {
+      if (a.trade_date !== b.trade_date) return a.trade_date < b.trade_date ? -1 : 1;
+      // open_8am_ct sorts before close_5pm_ct on the same date.
+      return a.snapshot_kind === 'open_8am_ct' ? -1 : 1;
+    });
+    // Use only: the first open_8am_ct (the morning baseline) + all close_5pm_ct.
+    // Intra-day opens for subsequent days are noise on the daily chart.
+    const firstOpen = sorted.find((p) => p.snapshot_kind === 'open_8am_ct');
+    const closes = sorted.filter((p) => p.snapshot_kind === 'close_5pm_ct');
+    const stratPoints = firstOpen ? [firstOpen, ...closes] : closes;
+
+    const benchByKey = new Map(
+      (benchPoints ?? []).map((b) => [
+        `${b.trade_date}|${b.snapshot_kind ?? 'close_5pm_ct'}`,
+        b.equity,
+      ]),
+    );
     const postByDate = new Map((postTaxPoints ?? []).map((b) => [b.trade_date, b.equity]));
-    return closeOnly.map((p) => {
-      const benchActual = benchByDate.get(p.trade_date) ?? null;
-      const postActual = postByDate.get(p.trade_date) ?? null;
+
+    return stratPoints.map((p) => {
+      const isAm = p.snapshot_kind === 'open_8am_ct';
+      // Label "Jun 2 AM" / "Jun 2 PM" so AM/PM of the same date don't collide.
+      const datePart = p.trade_date;
+      const label = `${datePart} ${isAm ? 'AM' : 'PM'}`;
+      const benchActual = benchByKey.get(`${datePart}|${p.snapshot_kind}`) ?? null;
+      // Post-tax line: morning baseline = starting capital; close = actual value.
+      const postActual = isAm ? starting : (postByDate.get(datePart) ?? null);
       return {
-        date: p.trade_date,
+        date: label,
         Strategy: p.equity * scale,
         Bench: benchActual == null ? null : benchActual * scale,
         'After tax': postActual == null ? null : postActual * scale,
-        // Carry the actual-dollar values for the tooltip.
         _stratActual: p.equity,
         _benchActual: benchActual,
         _postActual: postActual,
       };
     });
-  }, [points, benchPoints, postTaxPoints, scale]);
+  }, [points, benchPoints, postTaxPoints, scale, starting]);
   if (series.length === 0) return null;
   const sym = currencySymbol(currency);
   // Decide whether to render bench / post-tax. Bench is opt-in; post-tax

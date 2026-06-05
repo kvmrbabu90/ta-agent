@@ -350,6 +350,7 @@ export interface PaperTrade {
 export interface PaperBenchmarkPoint {
   trade_date: string;
   equity: number;
+  snapshot_kind?: 'open_8am_ct' | 'close_5pm_ct';
 }
 
 export interface PaperPostTaxPoint {

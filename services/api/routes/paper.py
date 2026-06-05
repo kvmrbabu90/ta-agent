@@ -118,26 +118,43 @@ def snapshot(
         # — the chart only needs the daily resolution.
         close_points = [p for p in equity_curve if p.snapshot_kind == "close_5pm_ct"]
 
-        # SPY benchmark, rebased to starting capital of the paper run.
-        # Fetch SPY closes over the equity_curve span from DuckDB.
+        # SPY benchmark, rebased so that the FIRST OPEN (8 AM CT of the
+        # first trading day) equals the run's starting cash. That way
+        # the chart's leftmost point shows both Strategy and Bench at
+        # the same starting value ($1,000 normalised), with their
+        # actual day-1-close divergence visible immediately to the
+        # right. Previously rebased to first CLOSE which forced SPY's
+        # first visible point to start at $1,000 while Strategy's first
+        # visible point was the day-1-close (a confusing mismatch).
         benchmark_curve: list[PaperBenchmarkPoint] = []
         if close_points:
             span_start = close_points[0].trade_date
             span_end = close_points[-1].trade_date
             bench_rows = duck.execute(
-                "SELECT bar_date, close FROM ohlcv_daily "
+                "SELECT bar_date, open, close FROM ohlcv_daily "
                 "WHERE symbol = ? AND bar_date >= ? AND bar_date <= ? "
                 "ORDER BY bar_date",
                 [_PAPER_BENCHMARK_SYMBOL, span_start, span_end],
             ).fetchall()
             if bench_rows:
-                bclose: dict[str, float] = {str(d): float(c) for d, c in bench_rows}
-                # First available bench close on/after span_start is the
-                # normalization anchor.
-                first_close = float(bench_rows[0][1])
-                # Rebase to starting_cash of the paper run.
-                scale = (run.starting_cash / first_close) if first_close > 0 else 0.0
-                last_close = first_close
+                bopen: dict[str, float] = {str(d): float(o) for d, o, _ in bench_rows}
+                bclose: dict[str, float] = {str(d): float(c) for d, _, c in bench_rows}
+                # Anchor on the first trading day's SPY OPEN price.
+                first_open = float(bench_rows[0][1])
+                scale = (run.starting_cash / first_open) if first_open > 0 else 0.0
+
+                # Emit a "morning baseline" point at the first trading
+                # day's OPEN. Both the chart and the actual SPY-vs-strategy
+                # comparison start from this point at exactly starting_cash.
+                benchmark_curve.append(
+                    PaperBenchmarkPoint(
+                        trade_date=close_points[0].trade_date,
+                        equity=round(first_open * scale, 4),
+                        snapshot_kind="open_8am_ct",
+                    )
+                )
+                # Emit close points for each subsequent close-of-day.
+                last_close = first_open  # carry forward if a date is missing
                 for p in close_points:
                     d_str = p.trade_date.isoformat()
                     if d_str in bclose:
@@ -146,6 +163,7 @@ def snapshot(
                         PaperBenchmarkPoint(
                             trade_date=p.trade_date,
                             equity=round(last_close * scale, 4),
+                            snapshot_kind="close_5pm_ct",
                         )
                     )
 
