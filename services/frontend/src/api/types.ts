@@ -320,14 +320,27 @@ export interface PaperPosition {
   side: 'long' | 'short';
   qty: number;
   entry_price: number;
+  // Oldest lot's entry date.
   entry_date: string;
+  // Newest lot's entry date. Equals entry_date for single-lot positions.
+  // This is the lot whose age drives `planned_exit_date`.
+  latest_entry_date: string | null;
   last_price: number | null;
   unrealized_pnl: number;
-  // Forced-close date from holding-period rule (entry + holding_days
-  // trading days). Null if the calendar lookup fails.
+  // Realized P&L on prior closes of this symbol since the oldest
+  // open lot was entered (e.g. a stop fired on an earlier lot while
+  // newer lots are still open).
+  realized_pnl_to_date: number | null;
+  // Forced-close date from holding-period rule (latest entry +
+  // holding_days trading days). Null if the calendar lookup fails.
   planned_exit_date: string | null;
-  // Stop-loss level — position closes here if hit. Null if stop disabled.
+  // Stop-loss level — tightest active stop across the `stop_lot_count`
+  // guarded lots. Null when no lot has a stop attached.
   stop_level: number | null;
+  // How many of the `lot_count` lots have a stop. If < lot_count the
+  // position is partially unguarded (broken-support guard skipped
+  // the stop on at least one lot).
+  stop_lot_count: number;
   // Number of open lots (entry orders) aggregated into this row.
   lot_count: number;
 }

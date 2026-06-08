@@ -207,8 +207,8 @@ function PaperRunView({
               {(data.post_tax_curve?.length ?? 0) > 0 ? (
                 <>
                   {' · '}
-                  <span className="text-emerald-400/70" title="30% short-term capital gains applied at end of each completed calendar year, reduced-base compounding">
-                    after tax
+                  <span className="text-emerald-400/70" title="Estimated post-tax NAV — 30% short-term capital gains applied at end of each fully-elapsed calendar year, reduced-base compounding. This is a forward estimate of the year-end tax bill; actual tax is owed in April and isn't reflected as a cash withdrawal here. Mid-year, this line tracks pre-tax (no haircut applied until Dec 28).">
+                    est. after tax
                   </span>
                 </>
               ) : null}
@@ -709,20 +709,20 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
                 title="Entry price. For multi-lot symbols this is the qty-weighted average across lots."
               />
               <SortableTh
-                label="Entry" sortKey="entry_date" align="right" sort={sort} onSort={toggle}
-                title="Entry date of the OLDEST lot for this symbol. When the position is held across multiple overlapping tranches (e.g. rebought daily across 5 days), this shows the first entry."
+                label="First→Last entry" sortKey="entry_date" align="right" sort={sort} onSort={toggle}
+                title="Entry date band: oldest lot → newest lot. For single-lot symbols only the oldest date shows. The NEWEST lot drives the planned exit date."
               />
               <SortableTh
                 label="Lots" sortKey="lots" align="right" sort={sort} onSort={toggle}
                 title="Number of open lots (entry orders) aggregated into this row."
               />
               <SortableTh
-                label="Exit" sortKey="planned_exit" align="right" sort={sort} onSort={toggle}
-                title="Planned forced-close date. Computed as entry-of-the-NEWEST lot + holding_days (5) trading days. Position fully closes by then unless the stop fires earlier."
+                label="Last exit" sortKey="planned_exit" align="right" sort={sort} onSort={toggle}
+                title="Planned forced-close date of the NEWEST lot (= newest entry + holding_days trading days). Once this date is reached the entire symbol is unwound. Earlier lots in the band exit on earlier dates implicitly; this column shows when the last lot leaves."
               />
               <SortableTh
                 label="Stop" sortKey="stop" align="right" sort={sort} onSort={toggle}
-                title="Stop-loss level. Tightest stop across active lots."
+                title="Stop-loss level. Tightest active stop across guarded lots. If fewer than all lots are guarded (e.g. broken-support skipped the stop on an entry day) the cell shows the count as 'X/Y stopped'."
               />
               <SortableTh label="Last" sortKey="last" align="right" sort={sort} onSort={toggle} />
               <SortableTh label="P&L" sortKey="pnl" align="right" sort={sort} onSort={toggle} />
@@ -746,21 +746,56 @@ function PositionsTable({ positions, currency }: { positions: PaperPosition[]; c
                   >
                     {sym}{p.entry_price.toFixed(2)}
                   </td>
-                  <td className="px-2 py-2 text-right font-mono text-gray-500">{p.entry_date}</td>
+                  <td className="px-2 py-2 text-right font-mono text-gray-500">
+                    {p.latest_entry_date && p.latest_entry_date !== p.entry_date
+                      ? `${p.entry_date} → ${p.latest_entry_date}`
+                      : p.entry_date}
+                  </td>
                   <td className="px-2 py-2 text-right font-mono text-gray-300">{p.lot_count}</td>
                   <td className="px-2 py-2 text-right font-mono text-gray-500">
                     {p.planned_exit_date ?? '—'}
                   </td>
-                  <td className="px-2 py-2 text-right font-mono text-amber-400/80">
-                    {p.stop_level != null ? `${sym}${p.stop_level.toFixed(2)}` : '—'}
+                  <td
+                    className="px-2 py-2 text-right font-mono text-amber-400/80"
+                    title={
+                      p.stop_lot_count < p.lot_count
+                        ? `Only ${p.stop_lot_count}/${p.lot_count} lots have a stop. ${p.lot_count - p.stop_lot_count} lot(s) run naked to the holding-window exit (broken-support guard skipped the stop on entry).`
+                        : undefined
+                    }
+                  >
+                    {p.stop_level != null ? (
+                      <>
+                        {sym}{p.stop_level.toFixed(2)}
+                        {p.stop_lot_count < p.lot_count && (
+                          <span className="ml-1 text-[10px] text-rose-400/80">
+                            ({p.stop_lot_count}/{p.lot_count})
+                          </span>
+                        )}
+                      </>
+                    ) : '—'}
                   </td>
                   <td className="px-2 py-2 text-right font-mono text-gray-300">
                     {p.last_price != null ? `${sym}${p.last_price.toFixed(2)}` : '—'}
                   </td>
-                  <td className={`px-2 py-2 text-right font-mono ${isPosPnl ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <td
+                    className={`px-2 py-2 text-right font-mono ${isPosPnl ? 'text-emerald-400' : 'text-rose-400'}`}
+                    title={
+                      p.realized_pnl_to_date != null
+                        ? `Unrealized on what's still open: ${signedMoneyFmt(p.unrealized_pnl, currency)}. Already-booked realized on prior closes in this cycle: ${signedMoneyFmt(p.realized_pnl_to_date, currency)}.`
+                        : undefined
+                    }
+                  >
                     {signedMoneyFmt(p.unrealized_pnl, currency)}
+                    {p.realized_pnl_to_date != null && (
+                      <div className="text-[10px] text-gray-500">
+                        realized {signedMoneyFmt(p.realized_pnl_to_date, currency)}
+                      </div>
+                    )}
                   </td>
-                  <td className={`px-2 py-2 text-right font-mono ${pct == null ? 'text-gray-500' : pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <td
+                    className={`px-2 py-2 text-right font-mono ${pct == null ? 'text-gray-500' : pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}
+                    title="Unrealized only — does NOT include realized P&L on prior closes of this symbol. See P&L column tooltip for realized."
+                  >
                     {pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
                   </td>
                 </tr>

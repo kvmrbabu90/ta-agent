@@ -288,8 +288,19 @@ def performance_summary(
     *,
     sqlite_path: str | None = None,
 ) -> dict:
-    """Aggregate stats over the last ``lookback_days`` of SETTLED predictions."""
-    cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
+    """Aggregate stats over the last ``lookback_days`` of SETTLED predictions.
+
+    `lookback_days` is interpreted as TRADING days (since `as_of` in
+    predictions_log holds trading days, never weekends/holidays).
+    Internally we convert to a calendar-day cutoff using a 7/5 ratio
+    (≈ 1 trading week per 1 calendar week) so the SQL filter doesn't
+    miss the earliest trading day in the window.
+    """
+    # Calendar-day cutoff sized to comfortably cover `lookback_days`
+    # trading days. ceil(lookback_days * 7 / 5) is the tightest upper
+    # bound. Add a small +3-day buffer for holiday clusters.
+    calendar_span = (lookback_days * 7 + 4) // 5 + 3
+    cutoff = (date.today() - timedelta(days=calendar_span)).isoformat()
 
     with get_sqlite_conn(sqlite_path) as conn:
         df = pd.read_sql_query(

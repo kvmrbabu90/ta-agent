@@ -139,8 +139,39 @@ def snapshot(
             if bench_rows:
                 bopen: dict[str, float] = {str(d): float(o) for d, o, _ in bench_rows}
                 bclose: dict[str, float] = {str(d): float(c) for d, _, c in bench_rows}
-                # Anchor on the first trading day's SPY OPEN price.
-                first_open = float(bench_rows[0][1])
+                # Anchor on the first trading day's SPY OPEN price. Validate
+                # OHLC invariant on the anchor — a polluted partial yfinance
+                # bar (open above high, etc.) would silently skew the entire
+                # rebased benchmark curve. If the anchor is bad, fall through
+                # to the FIRST CLOSE on a clean bar instead.
+                anchor_idx = 0
+                first_open = float(bench_rows[anchor_idx][1])
+                first_close = float(bench_rows[anchor_idx][2])
+                # Re-fetch high/low for invariant check.
+                hl_check = duck.execute(
+                    "SELECT high, low FROM ohlcv_daily "
+                    "WHERE symbol = ? AND bar_date = ? LIMIT 1",
+                    [_PAPER_BENCHMARK_SYMBOL, bench_rows[anchor_idx][0]],
+                ).fetchone()
+                anchor_clean = True
+                if hl_check:
+                    h, l = float(hl_check[0]), float(hl_check[1])
+                    if first_open > h or first_open < l or first_close > h or first_close < l:
+                        anchor_clean = False
+                if not anchor_clean:
+                    # Skip the anchor day, use next clean day as baseline.
+                    # Better to lose 1 day of bench history than show a
+                    # whole curve scaled off a polluted bar.
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "SPY anchor bar %s violates OHLC invariants "
+                        "(O=%.2f C=%.2f H=%.2f L=%.2f); skipping anchor",
+                        bench_rows[anchor_idx][0], first_open, first_close,
+                        float(hl_check[0]), float(hl_check[1]),
+                    )
+                    if len(bench_rows) > 1:
+                        anchor_idx = 1
+                        first_open = float(bench_rows[anchor_idx][1])
                 scale = (run.starting_cash / first_open) if first_open > 0 else 0.0
 
                 # Emit a "morning baseline" point at the first trading
@@ -244,7 +275,12 @@ def snapshot(
                         "cost_basis": 0.0,
                         "earliest_entry": entry_date,
                         "latest_entry": entry_date,
-                        "stop_level_max": stop_level,
+                        # Stop tracking. stop_level_max starts as None and
+                        # only gets set when a lot HAS a stop. stop_lot_count
+                        # tells the UI "this many of N lots are guarded" so a
+                        # partial-guard position can be flagged.
+                        "stop_level_max": None,
+                        "stop_lot_count": 0,
                         "lots": 0,
                     }
                 bucket = agg[key]
@@ -257,12 +293,40 @@ def snapshot(
                     bucket["latest_entry"] = entry_date
                 # Tightest stop = highest stop_level for longs (closer to
                 # last price). None values are ignored; the max() of all
-                # non-None values is taken.
+                # non-None values is taken. stop_lot_count records how
+                # many lots actually have a stop attached, so the UI can
+                # distinguish "all lots stopped" from "3/4 lots stopped".
                 if stop_level is not None:
+                    bucket["stop_lot_count"] += 1
                     if bucket["stop_level_max"] is None or stop_level > bucket["stop_level_max"]:
                         bucket["stop_level_max"] = stop_level
             symbols = [sym for sym, _side in agg.keys()]
             last_close_price_by_sym = _last_close_prices(symbols, last_date)
+            # Realized P&L on lots of THIS symbol that already closed in
+            # the current cycle (e.g. a stop fired on lot A while lots
+            # B,C of same symbol are still open). Window = since the
+            # earliest still-open lot's entry date. This pairs with
+            # unrealized so the UI can show "%ret rosy on what's open,
+            # but big realized loss already booked" instead of misleading
+            # the reader with unrealized-only context.
+            realized_by_sym: dict[str, float] = {}
+            if symbols:
+                # Per symbol: sum realized_pnl on close trades since the
+                # earliest open lot's entry_date for that symbol.
+                earliest_per_sym = {
+                    sym: agg[(sym, side)]["earliest_entry"]
+                    for sym, side in agg.keys()
+                }
+                for sym, earliest in earliest_per_sym.items():
+                    row = conn.execute(
+                        "SELECT COALESCE(SUM(realized_pnl), 0.0) "
+                        "FROM paper_trades WHERE run_id = ? AND symbol = ? "
+                        "AND side IN ('long_close', 'short_close', 'stop_close') "
+                        "AND trade_date >= ?",
+                        (run_id, sym, earliest),
+                    ).fetchone()
+                    if row and row[0]:
+                        realized_by_sym[sym] = float(row[0])
             # Planned exit = entry_date + holding_days TRADING days (not
             # calendar days). Use NYSE calendar for SP500. Computed once
             # then offset per symbol.
@@ -309,6 +373,17 @@ def snapshot(
                         target = i + holding_days
                         if target < len(trading_days):
                             return trading_days[target]
+                        # The 60-calendar-day forward window in `sched`
+                        # should cover any 5-day holding window. If we
+                        # land here it means either holding_days bumped
+                        # up unexpectedly OR the calendar slice is short.
+                        # Surface it instead of silently returning None.
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "planned_exit: entry=%s holding=%d landed past "
+                            "trading_days[len=%d]; widen calendar window",
+                            entry_str, holding_days, len(trading_days),
+                        )
                         return None
                 return None
 
@@ -332,13 +407,16 @@ def snapshot(
                         qty=qty,
                         entry_price=avg_entry,
                         entry_date=date.fromisoformat(bucket["earliest_entry"]),
+                        latest_entry_date=date.fromisoformat(bucket["latest_entry"]),
                         last_price=last_px_for_response,
                         unrealized_pnl=unreal,
+                        realized_pnl_to_date=realized_by_sym.get(sym),
                         # Planned exit = latest-lot's entry + holding_days
                         # (the position fully unwinds when the youngest
                         # lot expires).
                         planned_exit_date=_planned_exit(bucket["latest_entry"]),
                         stop_level=bucket["stop_level_max"],
+                        stop_lot_count=bucket["stop_lot_count"],
                         lot_count=bucket["lots"],
                     )
                 )

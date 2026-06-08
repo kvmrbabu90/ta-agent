@@ -208,17 +208,34 @@ class PaperPosition(_BaseResponse):
     side: str  # 'long' | 'short'
     qty: float
     entry_price: float
+    # Entry date of the OLDEST lot. For multi-lot symbols use
+    # `latest_entry_date` alongside this to see the full age band.
     entry_date: date
+    # Entry date of the NEWEST lot. When the position is a single lot
+    # this equals entry_date. When it spans multiple overlapping lots
+    # this is the lot whose age drives `planned_exit_date`.
+    latest_entry_date: date | None = None
     last_price: float | None = None
     unrealized_pnl: float = 0.0
-    # Forced-close date from the holding-period rule (entry_date + N trading
-    # days, where N = holding_days). The paper engine guarantees this exit
-    # unless the stop-loss fires first.
+    # Realized P&L on lots of this symbol that have ALREADY closed in
+    # the current open-position window (e.g. a stop_close fired on a lot
+    # earlier in the slice). Useful when the unrealized %ret looks
+    # rosy but realized was the bigger leg. Null if no prior closes.
+    realized_pnl_to_date: float | None = None
+    # Forced-close date from the holding-period rule (latest entry +
+    # holding_days TRADING days). The paper engine guarantees this
+    # exit unless the stop-loss fires first.
     planned_exit_date: date | None = None
     # Stop-loss level (price the position closes at if hit). Aggregated
     # across lots: the HIGHEST stop level across all of this symbol's
-    # active lots (the tightest stop — the most conservative for a long).
+    # active lots that ARE stopped — the tightest active stop. Note:
+    # this only covers `stop_lot_count` of `lot_count` lots; any unguarded
+    # lots run naked to the holding-window exit.
     stop_level: float | None = None
+    # How many of the `lot_count` lots actually have a stop attached.
+    # If `stop_lot_count < lot_count` the position is partially unguarded
+    # (the broken-support guard skipped the stop for at least one lot).
+    stop_lot_count: int = 0
     # Number of distinct open lots (entry orders) aggregated into this row.
     # With overlapping portfolios a symbol is often rebought across several
     # trading days; this is how many of those legs are still held.
