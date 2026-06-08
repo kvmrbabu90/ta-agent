@@ -267,19 +267,27 @@ def snapshot(
             # calendar days). Use NYSE calendar for SP500. Computed once
             # then offset per symbol.
             holding_days = int(getattr(run, "holding_days", None) or 5)
-            # Build a trading-day calendar covering the next ~3 weeks of
-            # business days starting from the latest entry seen.
+            # Build a trading-day calendar covering all open lots' entry
+            # dates plus a 60-day forward window. Must start from the
+            # EARLIEST entry — not the latest — so older lots can be
+            # located in trading_days[] and their +holding_days exit
+            # computed correctly. (Earlier bug: starting from `latest`
+            # meant a Jun 2 lot couldn't find its index in a calendar
+            # that started Jun 8, so the search fell on trading_days[0]
+            # and added 5, producing Jun 15 instead of Jun 9.)
             try:
                 import pandas_market_calendars as mcal
                 cal_name = "NYSE"
                 cal = mcal.get_calendar(cal_name)
-                # Look ahead 60 calendar days from the latest entry date,
-                # which always covers 5-10 trading days.
+                earliest_entry_str = min(b["earliest_entry"] for b in agg.values())
                 latest_entry_str = max(b["latest_entry"] for b in agg.values())
+                earliest_entry_dt = date.fromisoformat(earliest_entry_str)
                 latest_entry_dt = date.fromisoformat(latest_entry_str)
                 from datetime import timedelta as _td
+                # Window: earliest entry → latest entry + 60 calendar days.
+                # Easily covers any 5-day holding window across all lots.
                 sched = cal.schedule(
-                    start_date=latest_entry_dt.isoformat(),
+                    start_date=earliest_entry_dt.isoformat(),
                     end_date=(latest_entry_dt + _td(days=60)).isoformat(),
                 )
                 trading_days = [d.date() for d in sched.index]
