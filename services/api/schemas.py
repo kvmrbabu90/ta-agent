@@ -309,6 +309,42 @@ class PaperTradesResponse(_BaseResponse):
 
 
 # ---------------------------------------------------------------------------
+# /paper/intraday-mark — on-demand mid-day equity mark from live quotes
+# ---------------------------------------------------------------------------
+
+
+class PaperIntradayMark(_BaseResponse):
+    """Mid-session equity snapshot computed from live quotes, not persisted.
+
+    The paper-engine writes `paper_equity` rows only at the 8:35 CT post-open
+    tick and the 17:00 CT post-close tick. Between those, the curve is stale.
+    This endpoint pulls live quotes for every currently-held symbol, marks
+    the positions, and returns an ephemeral equity snapshot — useful when
+    the user wants a mid-day read without polluting `paper_equity` with
+    partial-bar marks.
+
+    `quoted_at_utc` is the time the quotes were fetched; `as_of_trade_date`
+    is the trading day the snapshot is FOR (typically today's date in CT).
+    """
+    run_id: str
+    as_of_trade_date: date
+    quoted_at_utc: str
+    equity: float
+    cash: float
+    long_mv: float
+    realized_pnl: float
+    unrealized_pnl: float
+    # vs the post-open mark from this morning (the closest persisted point).
+    intraday_delta: float | None = None
+    intraday_delta_pct: float | None = None
+    # When at least one symbol's live quote failed to fetch, we mark those
+    # positions at last close instead and report which ones fell back.
+    quote_failures: list[str] = Field(default_factory=list)
+    # Number of held symbols actually quoted live.
+    n_quoted_live: int = 0
+
+
+# ---------------------------------------------------------------------------
 # /paper/next-day-picks — what the engine will trade tomorrow at the open
 # ---------------------------------------------------------------------------
 

@@ -19,6 +19,7 @@ from services.api.schemas import (
     NextDayPicksResponse,
     PaperBenchmarkPoint,
     PaperEquityPoint,
+    PaperIntradayMark,
     PaperPosition,
     PaperPostTaxPoint,
     PaperRunSummary,
@@ -758,4 +759,173 @@ def next_day_picks(
         as_of=as_of_d, target_trade_date=target_trade_date,
         nav=nav, slice_budget=slice_budget, universe=universe, picks=picks,
         predictions_written_at=last_write,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /paper/intraday-mark — on-demand mid-session equity mark from live quotes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/intraday-mark", response_model=PaperIntradayMark)
+def intraday_mark(run_id: str = Query("default")) -> PaperIntradayMark:
+    """Compute a fresh equity mark from live quotes — NOT persisted.
+
+    The paper-engine only writes paper_equity at the 08:35 CT post-open
+    tick and the 17:00 CT post-close tick. Between those two, the snapshot
+    is stale. This endpoint:
+
+      1. Reads currently-held lots from paper_positions (latest trade_date).
+      2. Fetches a live last-trade price per symbol via yfinance.fast_info.
+      3. Marks each lot at the live price; computes equity = cash + long_mv.
+      4. Returns the result alongside the delta vs this morning's post-open
+         mark. Does NOT touch paper_equity.
+
+    yfinance.fast_info returns the most recent trade tick — fast (no full
+    bar fetch) and avoids the partial-bar OHLC-invariant problem we hit
+    with daily_update. If a symbol fails to quote (rate limit, delisting,
+    network glitch), we fall back to its last close in ohlcv_daily and
+    return its symbol in `quote_failures` so the UI can flag it.
+    """
+    import yfinance as yf
+    from datetime import datetime, timezone as _tz
+
+    conn = _conn()
+    try:
+        # 1. Find the latest snapshot of open lots.
+        row = conn.execute(
+            "SELECT MAX(trade_date) FROM paper_positions WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            raise HTTPException(404, f"no positions for run_id={run_id}")
+        last_pos_date = row[0]
+        last_pos_date_d = date.fromisoformat(last_pos_date)
+
+        # Read held lots WITH entry_price. Cost basis = sum(qty × entry).
+        lots = conn.execute(
+            "SELECT symbol, side, qty, entry_price FROM paper_positions "
+            "WHERE run_id = ? AND trade_date = ?",
+            (run_id, last_pos_date),
+        ).fetchall()
+
+        # Use the bookkeeping invariant to derive everything else without
+        # racing the engine's snapshot timing:
+        #   cash    = starting + Σrealized − Σcost_basis_open
+        #   equity  = starting + Σrealized + (long_mv_live − cost_basis_open)
+        # Reading cash directly from paper_equity is unsafe here because
+        # the 08:35 CT snapshot is written BEFORE today's expiry closes +
+        # new opens, while paper_positions reflects AFTER both — so the
+        # two timestamps don't reconcile mid-cycle.
+        run_row = conn.execute(
+            "SELECT starting_cash FROM paper_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if not run_row:
+            raise HTTPException(404, f"run_id={run_id} not found")
+        starting_cash = float(run_row[0])
+
+        realized_row = conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0.0) FROM paper_trades "
+            "WHERE run_id = ? AND side IN ('long_close', 'short_close', 'stop_close')",
+            (run_id,),
+        ).fetchone()
+        realized_pnl = float(realized_row[0]) if realized_row else 0.0
+
+        # Post-open mark for today, for delta comparison.
+        post_open = conn.execute(
+            "SELECT equity FROM paper_equity "
+            "WHERE run_id = ? AND trade_date = ? AND snapshot_kind = 'open_8am_ct'",
+            (run_id, last_pos_date),
+        ).fetchone()
+        post_open_eq = float(post_open[0]) if post_open else None
+    finally:
+        conn.close()
+
+    if not lots:
+        # No holdings — equity = starting + realized. No quotes needed.
+        cash = starting_cash + realized_pnl
+        equity = cash
+        return PaperIntradayMark(
+            run_id=run_id,
+            as_of_trade_date=last_pos_date_d,
+            quoted_at_utc=datetime.now(_tz.utc).isoformat(timespec="seconds"),
+            equity=equity, cash=cash, long_mv=0.0,
+            realized_pnl=realized_pnl, unrealized_pnl=0.0,
+            intraday_delta=(equity - post_open_eq) if post_open_eq is not None else None,
+            intraday_delta_pct=(
+                (equity - post_open_eq) / post_open_eq * 100
+                if post_open_eq and post_open_eq > 0 else None
+            ),
+            quote_failures=[], n_quoted_live=0,
+        )
+
+    # 2. Live quotes. yfinance fast_info hits Yahoo's quote endpoint —
+    #    a couple hundred ms per symbol. For ~10 held symbols this
+    #    finishes in <2s typical. No persistence.
+    symbols = sorted({l[0] for l in lots})
+    live_px: dict[str, float] = {}
+    quote_failures: list[str] = []
+    for sym in symbols:
+        try:
+            t = yf.Ticker(sym)
+            px = t.fast_info.get("last_price")
+            if px is None:
+                # Some symbols return last_trade or lastPrice instead.
+                px = t.fast_info.get("lastPrice") or t.fast_info.get("regularMarketPrice")
+            if px is not None and float(px) > 0:
+                live_px[sym] = float(px)
+            else:
+                quote_failures.append(sym)
+        except Exception:  # noqa: BLE001 — yfinance can raise many things
+            quote_failures.append(sym)
+
+    # 3. Fallback to last close for any failed quotes, so the user still
+    #    gets a usable mark instead of a 502.
+    if quote_failures:
+        fallback = _last_close_prices(quote_failures, last_pos_date_d)
+        for sym, px in fallback.items():
+            if px is not None:
+                live_px[sym] = px
+
+    # 4. Mark lots. long_mv = sum(qty × live_px), cost_basis = sum(qty × entry).
+    #    Lots whose quote failed AND had no fallback get skipped from
+    #    BOTH sums so the unrealized delta isn't biased by a partial mark.
+    long_mv = 0.0
+    cost_basis_priced = 0.0
+    cost_basis_all = 0.0
+    for sym, _side, qty, entry_price in lots:
+        cost = float(qty) * float(entry_price)
+        cost_basis_all += cost
+        px = live_px.get(sym)
+        if px is None:
+            continue
+        long_mv += float(qty) * px
+        cost_basis_priced += cost
+    unrealized = long_mv - cost_basis_priced
+    # Equity via the bookkeeping invariant:
+    #   cash    = starting + Σrealized − cost_basis_all_open
+    #   equity  = cash + long_mv_live
+    # When some lots couldn't be quoted we use the fallback last-close
+    # mark (already merged into live_px); cost_basis_priced == cost_basis_all
+    # in the common case. If a lot truly has no price at all we exclude
+    # it from BOTH sides above, which means equity carries that lot at
+    # cost basis — equivalent to assuming "no move since entry" for the
+    # unquotable lot. Reported in quote_failures so the user can spot it.
+    cash = starting_cash + realized_pnl - cost_basis_all
+    equity = cash + long_mv + (cost_basis_all - cost_basis_priced)
+
+    delta = (equity - post_open_eq) if post_open_eq is not None else None
+    delta_pct = (
+        (delta / post_open_eq * 100) if (delta is not None and post_open_eq and post_open_eq > 0)
+        else None
+    )
+
+    return PaperIntradayMark(
+        run_id=run_id,
+        as_of_trade_date=last_pos_date_d,
+        quoted_at_utc=datetime.now(_tz.utc).isoformat(timespec="seconds"),
+        equity=equity, cash=cash, long_mv=long_mv,
+        realized_pnl=realized_pnl, unrealized_pnl=unrealized,
+        intraday_delta=delta, intraday_delta_pct=delta_pct,
+        quote_failures=quote_failures,
+        n_quoted_live=len(live_px) - len([s for s in quote_failures if s in live_px]),
     )

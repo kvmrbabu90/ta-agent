@@ -2,14 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
-import { ArrowDown, ArrowUp, Banknote, ChevronsUpDown, Clock } from 'lucide-react';
-import { useNextDayPicks, usePaperSnapshot, usePaperTrades } from '@/hooks/usePaper';
+import { ArrowDown, ArrowUp, Banknote, ChevronsUpDown, Clock, RefreshCw } from 'lucide-react';
+import {
+  useIntradayMark, useNextDayPicks, usePaperSnapshot, usePaperTrades,
+} from '@/hooks/usePaper';
 import { useUniverses } from '@/hooks/useUniverses';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
 import { UniverseSelector } from '@/components/UniverseSelector';
-import type { NextDayPicksResponse, PaperEquityPoint, PaperPosition, PaperTrade, PaperRunSummary } from '@/api/types';
+import type { NextDayPicksResponse, PaperEquityPoint, PaperIntradayMark, PaperPosition, PaperTrade, PaperRunSummary } from '@/api/types';
 
 // ---------------------------------------------------------------------------
 // Currency formatting — supports USD ($) and INR (₹ with Indian comma format)
@@ -112,6 +114,10 @@ export function PaperTradePage() {
   // P&L. Pull the last 100 close events (long_close, short_close,
   // stop_close) so the user sees what's been booked recently.
   const tradesQ = usePaperTrades(runId, 100, true);
+  // Manual-trigger mutation. Fires only when the Refresh button is
+  // clicked — never auto-polled (yfinance is rate-limit-sensitive and
+  // the user only needs this when actively checking mid-day).
+  const intradayM = useIntradayMark(runId);
 
   return (
     <div className="space-y-6">
@@ -138,6 +144,10 @@ export function PaperTradePage() {
           picks={picksQ.data}
           picksLoading={picksQ.isLoading}
           currency={currency}
+          intradayMark={intradayM.data}
+          intradayLoading={intradayM.isPending}
+          intradayError={intradayM.error as Error | null}
+          onRefreshIntraday={() => intradayM.mutate()}
         />
       )}
     </div>
@@ -150,6 +160,7 @@ export function PaperTradePage() {
 
 function PaperRunView({
   data, trades, tradesLoading, picks, picksLoading, currency,
+  intradayMark, intradayLoading, intradayError, onRefreshIntraday,
 }: {
   data: {
     run: PaperRunSummary;
@@ -165,6 +176,10 @@ function PaperRunView({
   picks: NextDayPicksResponse | undefined;
   picksLoading: boolean;
   currency: Currency;
+  intradayMark: PaperIntradayMark | undefined;
+  intradayLoading: boolean;
+  intradayError: Error | null;
+  onRefreshIntraday: () => void;
 }) {
   const { run, equity_curve, positions } = data;
   const totalReturn = run.final_equity != null
@@ -196,6 +211,10 @@ function PaperRunView({
         equity_curve={equity_curve}
         starting_cash={run.starting_cash}
         currency={currency}
+        intradayMark={intradayMark}
+        intradayLoading={intradayLoading}
+        intradayError={intradayError}
+        onRefreshIntraday={onRefreshIntraday}
       />
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
@@ -232,6 +251,7 @@ function PaperRunView({
                 benchSymbol={data.benchmark_symbol}
                 starting={run.starting_cash}
                 currency={currency}
+                intradayMark={intradayMark}
               />
             ) : (
               <EmptyState
@@ -258,10 +278,17 @@ function PaperRunView({
 // Today's two snapshots: post-open (08:35 CT) and post-close (17:00 CT)
 // ---------------------------------------------------------------------------
 
-function SnapshotsToday({ equity_curve, starting_cash, currency }: {
+function SnapshotsToday({
+  equity_curve, starting_cash, currency,
+  intradayMark, intradayLoading, intradayError, onRefreshIntraday,
+}: {
   equity_curve: PaperEquityPoint[];
   starting_cash: number;
   currency: Currency;
+  intradayMark: PaperIntradayMark | undefined;
+  intradayLoading: boolean;
+  intradayError: Error | null;
+  onRefreshIntraday: () => void;
 }) {
   // Always anchor on the current market date — show "Awaiting" until each
   // run produces its snapshot, rather than falling back to the last day
@@ -281,6 +308,14 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
   // shows the auction time since that's what the price reflects.
   const openLabel = isIndia ? '9:15 AM IST' : '8:30 AM CT';
   const closeLabel = isIndia ? '3:30 PM IST' : '5:00 PM CT';
+
+  // Local-CT time of the intraday quote, for the card label.
+  const intradayLabel = intradayMark
+    ? new Date(intradayMark.quoted_at_utc).toLocaleTimeString('en-US', {
+        timeZone: isIndia ? 'Asia/Kolkata' : 'America/Chicago',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }) + (isIndia ? ' IST' : ' CT')
+    : '—';
 
   // Intraday P&L only becomes meaningful once the close (post-5pm) snapshot
   // lands. Decompose the open→close equity change into realized and
@@ -309,10 +344,31 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
 
   return (
     <section className="space-y-3">
-      <h2 className="text-base font-semibold text-gray-100">
-        Today&apos;s snapshots <span className="text-gray-500">({today})</span>
-      </h2>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold text-gray-100">
+          Today&apos;s snapshots <span className="text-gray-500">({today})</span>
+        </h2>
+        <button
+          type="button"
+          onClick={onRefreshIntraday}
+          disabled={intradayLoading}
+          className={[
+            'inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-800/60',
+            'px-2.5 py-1 text-xs font-medium text-gray-200',
+            'hover:bg-gray-800 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed',
+          ].join(' ')}
+          title="Pull live quotes for held positions and recompute equity. Result is shown in the Intraday mark card and appended to the equity chart for this session only — not persisted."
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${intradayLoading ? 'animate-spin' : ''}`} />
+          {intradayLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+      {intradayError && (
+        <div className="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-300">
+          Refresh failed: {intradayError.message}
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <SnapshotCard
           icon={<Clock className="h-5 w-5 text-gray-400" />}
           time={openLabel}
@@ -320,6 +376,13 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
           point={open8am}
           starting={starting_cash}
           currency={currency}
+        />
+        <IntradayCard
+          intraday={intradayMark}
+          time={intradayLabel}
+          starting={starting_cash}
+          currency={currency}
+          stale={!intradayMark}
         />
         <SnapshotCard
           icon={<Clock className="h-5 w-5 text-gray-400" />}
@@ -437,17 +500,80 @@ function SnapshotCard({ icon, time, label, point, starting, currency }: {
   );
 }
 
+function IntradayCard({ intraday, time, starting, currency, stale }: {
+  intraday: PaperIntradayMark | undefined;
+  time: string;
+  starting: number;
+  currency: Currency;
+  stale: boolean;
+}) {
+  if (stale || !intraday) {
+    return (
+      <div className="rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="h-5 w-5 text-gray-400" />
+            <span className="text-sm font-medium text-gray-300">Intraday mark</span>
+          </div>
+          <span className="text-[11px] uppercase tracking-wider text-gray-500">on-demand</span>
+        </div>
+        <div className="mt-2 font-mono text-2xl font-semibold text-gray-500">—</div>
+        <div className="text-[11px] text-gray-500">
+          click Refresh to pull live quotes
+        </div>
+      </div>
+    );
+  }
+  const pnl = intraday.equity - starting;
+  const isPos = pnl >= 0;
+  const intradayPos = (intraday.intraday_delta ?? 0) >= 0;
+  return (
+    <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 px-4 py-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <RefreshCw className="h-5 w-5 text-amber-400/70" />
+          <span className="text-sm font-medium text-gray-200">{time}</span>
+        </div>
+        <span className="text-[11px] uppercase tracking-wider text-amber-400/70" title="Computed from live yfinance quotes — not persisted to paper_equity">live mark</span>
+      </div>
+      <div className={`mt-2 font-mono text-2xl font-semibold ${isPos ? 'text-emerald-400' : 'text-rose-400'}`}>
+        {moneyFmt(intraday.equity, currency)}
+      </div>
+      <div className={`text-[11px] ${isPos ? 'text-emerald-400/80' : 'text-rose-400/80'}`}>
+        {signedMoneyFmt(pnl, currency)} ({isPos ? '+' : ''}{pctFmt(pnl / starting)})
+      </div>
+      {intraday.intraday_delta != null && (
+        <div className="mt-1 text-[11px] text-gray-500">
+          vs 8:30 open{' '}
+          <span className={intradayPos ? 'text-emerald-400/80' : 'text-rose-400/80'}>
+            {signedMoneyFmt(intraday.intraday_delta, currency)}
+            {intraday.intraday_delta_pct != null && (
+              <> ({intraday.intraday_delta_pct >= 0 ? '+' : ''}{intraday.intraday_delta_pct.toFixed(2)}%)</>
+            )}
+          </span>
+        </div>
+      )}
+      {intraday.quote_failures.length > 0 && (
+        <div className="mt-1 text-[10px] text-rose-400/70" title={`Live quote failed for: ${intraday.quote_failures.join(', ')}. Marked at last close instead.`}>
+          {intraday.quote_failures.length} quote(s) fell back to last close
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Equity chart
 // ---------------------------------------------------------------------------
 
-function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting, currency }: {
+function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting, currency, intradayMark }: {
   points: PaperEquityPoint[];
   benchPoints?: { trade_date: string; equity: number; snapshot_kind?: 'open_8am_ct' | 'close_5pm_ct' }[];
   postTaxPoints?: { trade_date: string; equity: number }[];
   benchSymbol?: string | null;
   starting: number;
   currency: Currency;
+  intradayMark?: PaperIntradayMark | undefined;
 }) {
   // Equity-curve series. The leftmost point is the open_8am_ct snapshot
   // of the first trading day — both Strategy and SPY anchored at
@@ -476,7 +602,7 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
     );
     const postByDate = new Map((postTaxPoints ?? []).map((b) => [b.trade_date, b.equity]));
 
-    return stratPoints.map((p) => {
+    const basePoints = stratPoints.map((p) => {
       const isAm = p.snapshot_kind === 'open_8am_ct';
       const datePart = p.trade_date;
       const label = `${datePart} ${isAm ? 'AM' : 'PM'}`;
@@ -490,7 +616,20 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
         'After tax': postActual,
       };
     });
-  }, [points, benchPoints, postTaxPoints, starting]);
+
+    // Append the intraday mark as the latest point (after the last close).
+    // The label uses "LIVE" to make it clear this is the on-demand mark.
+    // It's not persisted — refreshing the snapshot wipes it.
+    if (intradayMark) {
+      basePoints.push({
+        date: `${intradayMark.as_of_trade_date} LIVE`,
+        Strategy: intradayMark.equity,
+        Bench: null,
+        'After tax': null,
+      });
+    }
+    return basePoints;
+  }, [points, benchPoints, postTaxPoints, starting, intradayMark]);
   if (series.length === 0) return null;
   const sym = currencySymbol(currency);
   // Decide whether to render bench / post-tax. Bench is opt-in; post-tax

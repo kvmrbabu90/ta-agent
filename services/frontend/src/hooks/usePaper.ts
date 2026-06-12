@@ -1,5 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
-import { fetchNextDayPicks, fetchPaperSnapshot, fetchPaperTrades } from '@/api/paper';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import {
+  fetchIntradayMark,
+  fetchNextDayPicks,
+  fetchPaperSnapshot,
+  fetchPaperTrades,
+} from '@/api/paper';
 
 export function usePaperSnapshot(runId = 'default', lookbackDays = 60) {
   return useQuery({
@@ -25,5 +30,15 @@ export function useNextDayPicks(runId = 'default') {
     // Refetch on window focus — the picks update after the 17:00 CT
     // daily_predict step, and the user typically refocuses to check.
     refetchOnWindowFocus: true,
+  });
+}
+
+// Manual-trigger mutation. The intraday-mark endpoint pulls live yfinance
+// quotes and is rate-limit-sensitive — we only fire it when the user
+// clicks Refresh, not on a timer.
+export function useIntradayMark(runId = 'default') {
+  return useMutation({
+    mutationKey: ['paper-intraday-mark', runId],
+    mutationFn: () => fetchIntradayMark(runId),
   });
 }

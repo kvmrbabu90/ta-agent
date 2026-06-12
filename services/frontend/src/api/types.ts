@@ -386,6 +386,21 @@ export interface PaperTradesResponse {
   trades: PaperTrade[];
 }
 
+export interface PaperIntradayMark {
+  run_id: string;
+  as_of_trade_date: string;
+  quoted_at_utc: string;
+  equity: number;
+  cash: number;
+  long_mv: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  intraday_delta: number | null;
+  intraday_delta_pct: number | null;
+  quote_failures: string[];
+  n_quoted_live: number;
+}
+
 export interface NextDayPick {
   rank: number;
   symbol: string;

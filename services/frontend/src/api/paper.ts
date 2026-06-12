@@ -1,6 +1,7 @@
 import { apiGet } from './client';
 import type {
   NextDayPicksResponse,
+  PaperIntradayMark,
   PaperSnapshotResponse,
   PaperTradesResponse,
 } from './types';
@@ -33,6 +34,14 @@ export function fetchNextDayPicks(
   runId = 'default',
 ): Promise<NextDayPicksResponse> {
   return apiGet<NextDayPicksResponse>('/paper/next-day-picks', {
+    run_id: runId,
+  });
+}
+
+export function fetchIntradayMark(
+  runId = 'default',
+): Promise<PaperIntradayMark> {
+  return apiGet<PaperIntradayMark>('/paper/intraday-mark', {
     run_id: runId,
   });
 }
