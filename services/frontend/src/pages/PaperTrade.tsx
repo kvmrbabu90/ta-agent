@@ -66,7 +66,7 @@ function describeStrategy(run: PaperRunSummary, currency: Currency): string {
         ? `, short bottom ${run.n_short} (when predicted < -${pctFmt(run.short_threshold, 1)})`
         : '') +
       `. Equal-weight ${moneyFmt(run.position_size, currency, 0)} per position. ` +
-      `Re-rebalanced at 8am CT each trading day.`
+      `Rebalanced at the 8:30 CT open each trading day.`
     );
   }
   // v2: overlapping portfolios + conviction weighting + stop-loss.
@@ -255,7 +255,7 @@ function PaperRunView({
 }
 
 // ---------------------------------------------------------------------------
-// Today's two snapshots: 8am CT and 5pm CT
+// Today's two snapshots: post-open (08:35 CT) and post-close (17:00 CT)
 // ---------------------------------------------------------------------------
 
 function SnapshotsToday({ equity_curve, starting_cash, currency }: {
@@ -276,7 +276,10 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
   const close5pm = todaysPoints.find((p) => p.snapshot_kind === 'close_5pm_ct');
 
   const isIndia = currency === 'INR';
-  const openLabel = isIndia ? '9:15 AM IST' : '8:00 AM CT';
+  // 8:30 CT is the NYSE opening auction. Orders fill at that print; the
+  // snapshot row is written at the 8:35 CT scheduler tick. The label
+  // shows the auction time since that's what the price reflects.
+  const openLabel = isIndia ? '9:15 AM IST' : '8:30 AM CT';
   const closeLabel = isIndia ? '3:30 PM IST' : '5:00 PM CT';
 
   // Intraday P&L only becomes meaningful once the close (post-5pm) snapshot
@@ -313,7 +316,7 @@ function SnapshotsToday({ equity_curve, starting_cash, currency }: {
         <SnapshotCard
           icon={<Clock className="h-5 w-5 text-gray-400" />}
           time={openLabel}
-          label="Pre-market state"
+          label="Post-open mark"
           point={open8am}
           starting={starting_cash}
           currency={currency}
