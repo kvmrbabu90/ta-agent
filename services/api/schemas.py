@@ -342,6 +342,11 @@ class PaperIntradayMark(_BaseResponse):
     quote_failures: list[str] = Field(default_factory=list)
     # Number of held symbols actually quoted live.
     n_quoted_live: int = 0
+    # Live SPY quote, rebased to the run's starting_cash — so the chart
+    # can extend the SPY benchmark line to the live point too. None if
+    # the SPY quote fetch failed.
+    benchmark_live_equity: float | None = None
+    benchmark_symbol: str | None = None
 
 
 # ---------------------------------------------------------------------------

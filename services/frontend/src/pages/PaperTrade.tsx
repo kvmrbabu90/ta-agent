@@ -317,30 +317,49 @@ function SnapshotsToday({
       }) + (isIndia ? ' IST' : ' CT')
     : '—';
 
-  // Intraday P&L only becomes meaningful once the close (post-5pm) snapshot
-  // lands. Decompose the open→close equity change into realized and
-  // unrealized deltas using the cumulative figures on each snapshot.
+  // Intraday P&L: prefer the LIVE mark (from the Refresh button) over the
+  // persisted close_5pm row. Reason: the close row is only meaningful
+  // AFTER the 17:00 CT pipeline tick has run, and reflects whatever
+  // ohlcv_daily contained at that moment. The live mark uses live
+  // yfinance quotes and is strictly fresher. Fall back to (open8am →
+  // close5pm) if no live mark has been pulled yet AND a close row exists.
   //
-  // % returns are computed against the start-of-day equity (8am snapshot),
-  // so they answer "what % move did the strategy generate TODAY" — not
-  // since-inception. Denominator falls back to starting_cash if equity is
-  // somehow 0 (shouldn't happen but defensive).
-  const intraday = open8am && close5pm
-    ? (() => {
-        const totalD = close5pm.equity - open8am.equity;
-        const realizedD = close5pm.realized_pnl - open8am.realized_pnl;
-        const unrealizedD = close5pm.unrealized_pnl - open8am.unrealized_pnl;
-        const denom = open8am.equity > 0 ? open8am.equity : starting_cash;
-        return {
-          total: totalD,
-          realized: realizedD,
-          unrealized: unrealizedD,
-          totalPct: denom > 0 ? (totalD / denom) * 100 : null,
-          realizedPct: denom > 0 ? (realizedD / denom) * 100 : null,
-          unrealizedPct: denom > 0 ? (unrealizedD / denom) * 100 : null,
-        };
-      })()
-    : null;
+  // % returns are computed against the post-open equity (the 8:30 mark),
+  // so they answer "what % did the strategy generate intraday" — not
+  // since-inception. Denominator falls back to starting_cash defensively.
+  const intraday = (() => {
+    if (!open8am) return null;
+    const denom = open8am.equity > 0 ? open8am.equity : starting_cash;
+    if (intradayMark) {
+      const totalD = intradayMark.equity - open8am.equity;
+      const realizedD = intradayMark.realized_pnl - open8am.realized_pnl;
+      const unrealizedD = intradayMark.unrealized_pnl - open8am.unrealized_pnl;
+      return {
+        total: totalD,
+        realized: realizedD,
+        unrealized: unrealizedD,
+        totalPct: denom > 0 ? (totalD / denom) * 100 : null,
+        realizedPct: denom > 0 ? (realizedD / denom) * 100 : null,
+        unrealizedPct: denom > 0 ? (unrealizedD / denom) * 100 : null,
+        source: 'live' as const,
+      };
+    }
+    if (close5pm) {
+      const totalD = close5pm.equity - open8am.equity;
+      const realizedD = close5pm.realized_pnl - open8am.realized_pnl;
+      const unrealizedD = close5pm.unrealized_pnl - open8am.unrealized_pnl;
+      return {
+        total: totalD,
+        realized: realizedD,
+        unrealized: unrealizedD,
+        totalPct: denom > 0 ? (totalD / denom) * 100 : null,
+        realizedPct: denom > 0 ? (realizedD / denom) * 100 : null,
+        unrealizedPct: denom > 0 ? (unrealizedD / denom) * 100 : null,
+        source: 'close' as const,
+      };
+    }
+    return null;
+  })();
 
   return (
     <section className="space-y-3">
@@ -393,9 +412,21 @@ function SnapshotsToday({
           currency={currency}
         />
         <div className="rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Banknote className="h-5 w-5 text-gray-400" />
-            <span className="text-sm font-medium text-gray-300">Intraday P&amp;L</span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Banknote className="h-5 w-5 text-gray-400" />
+              <span className="text-sm font-medium text-gray-300">Intraday P&amp;L</span>
+            </div>
+            {intraday?.source === 'live' && (
+              <span className="text-[10px] uppercase tracking-wider text-amber-400/80" title="Computed from the live mark — refresh to update.">
+                live
+              </span>
+            )}
+            {intraday?.source === 'close' && (
+              <span className="text-[10px] uppercase tracking-wider text-gray-500" title="Computed from the persisted 5pm close. Click Refresh on Today's Snapshots for a live read.">
+                from close
+              </span>
+            )}
           </div>
           {intraday == null ? (
             <>
@@ -624,7 +655,11 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
       basePoints.push({
         date: `${intradayMark.as_of_trade_date} LIVE`,
         Strategy: intradayMark.equity,
-        Bench: null,
+        // Use the live SPY quote so the bench line extends to the LIVE
+        // point. If SPY quote fetch failed, fall through to null and
+        // recharts' connectNulls leaves the bench line ending at the
+        // last persisted close.
+        Bench: intradayMark.benchmark_live_equity ?? null,
         'After tax': null,
       });
     }

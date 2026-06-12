@@ -399,6 +399,11 @@ export interface PaperIntradayMark {
   intraday_delta_pct: number | null;
   quote_failures: string[];
   n_quoted_live: number;
+  // Live SPY quote rebased to starting_cash on the same anchor as the
+  // persisted benchmark_curve. Lets the chart extend the SPY line to
+  // the LIVE point. Null if SPY quote fetch failed.
+  benchmark_live_equity: number | null;
+  benchmark_symbol: string | null;
 }
 
 export interface NextDayPick {

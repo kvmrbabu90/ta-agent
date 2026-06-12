@@ -841,7 +841,8 @@ def intraday_mark(run_id: str = Query("default")) -> PaperIntradayMark:
         conn.close()
 
     if not lots:
-        # No holdings — equity = starting + realized. No quotes needed.
+        # No holdings — equity = starting + realized. Still pull SPY for
+        # the chart so the bench line extends to LIVE.
         cash = starting_cash + realized_pnl
         equity = cash
         return PaperIntradayMark(
@@ -856,6 +857,7 @@ def intraday_mark(run_id: str = Query("default")) -> PaperIntradayMark:
                 if post_open_eq and post_open_eq > 0 else None
             ),
             quote_failures=[], n_quoted_live=0,
+            benchmark_live_equity=None, benchmark_symbol=None,
         )
 
     # 2. Live quotes. yfinance fast_info hits Yahoo's quote endpoint —
@@ -919,6 +921,47 @@ def intraday_mark(run_id: str = Query("default")) -> PaperIntradayMark:
         else None
     )
 
+    # Live SPY quote, rebased to the run's starting_cash anchored on the
+    # FIRST trading day's SPY OPEN (same anchor the persisted benchmark
+    # curve uses, so the live point lands on the same scaled line).
+    # yfinance fast_info keys are inconsistent across symbols — SPY
+    # exposes `lastPrice` (camelCase) but most stocks also have
+    # `last_price` (snake_case). Try both before regularMarketPrice.
+    bench_live_eq: float | None = None
+    try:
+        spy_q = yf.Ticker(_PAPER_BENCHMARK_SYMBOL)
+        spy_info = spy_q.fast_info
+        spy_px = (
+            spy_info.get("last_price")
+            or spy_info.get("lastPrice")
+            or spy_info.get("regularMarketPrice")
+        )
+        if spy_px and float(spy_px) > 0:
+            # Find the run's first trading day's SPY open for rebasing.
+            conn2 = _conn()
+            try:
+                first_td_row = conn2.execute(
+                    "SELECT MIN(trade_date) FROM paper_equity WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+            finally:
+                conn2.close()
+            if first_td_row and first_td_row[0]:
+                import duckdb as _ddb
+                d = _ddb.connect(settings.duckdb_path, read_only=True)
+                try:
+                    anchor = d.execute(
+                        "SELECT open FROM ohlcv_daily WHERE symbol = ? AND bar_date = ?",
+                        [_PAPER_BENCHMARK_SYMBOL, first_td_row[0]],
+                    ).fetchone()
+                finally:
+                    d.close()
+                if anchor and anchor[0] and float(anchor[0]) > 0:
+                    scale = starting_cash / float(anchor[0])
+                    bench_live_eq = round(float(spy_px) * scale, 4)
+    except Exception:  # noqa: BLE001 — SPY quote failure is non-fatal
+        bench_live_eq = None
+
     return PaperIntradayMark(
         run_id=run_id,
         as_of_trade_date=last_pos_date_d,
@@ -928,4 +971,6 @@ def intraday_mark(run_id: str = Query("default")) -> PaperIntradayMark:
         intraday_delta=delta, intraday_delta_pct=delta_pct,
         quote_failures=quote_failures,
         n_quoted_live=len(live_px) - len([s for s in quote_failures if s in live_px]),
+        benchmark_live_equity=bench_live_eq,
+        benchmark_symbol=_PAPER_BENCHMARK_SYMBOL if bench_live_eq is not None else None,
     )
