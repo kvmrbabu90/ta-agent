@@ -113,6 +113,50 @@ def snapshot(
             if date.fromisoformat(r[0]).toordinal() >= cutoff
         ]
 
+        # --- Suppress a PRELIMINARY close ----------------------------------
+        # The daily pipeline runs at 08:35 CT (post-open) AND 17:00 CT
+        # (post-close). The morning tick re-runs the paper backtest, which
+        # marks TODAY's close using whatever bar is in ohlcv_daily — but at
+        # 08:43 CT that's a 13-minute-old PARTIAL bar, not the real close.
+        # The result is a `close_5pm_ct` row for today written hours before
+        # the session ends, carrying a bogus equity that pollutes the
+        # headline NAV, the "5:00 PM" snapshot card, and the equity chart.
+        #
+        # Rule: a `close_5pm_ct` row for TODAY (CT) is preliminary until the
+        # 17:00 CT post-close tick has run. While preliminary we drop it from
+        # the curve (so the chart + 5pm card show "awaiting" and the live
+        # intraday mark is the source of truth) and re-point the headline
+        # final_equity at today's real 08:30 open mark.
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        _POST_CLOSE_HOUR_CT = 17
+        now_ct = _dt.now(_ZI("America/Chicago"))
+        today_ct = now_ct.date()
+        today_close_preliminary = False
+        if now_ct.hour < _POST_CLOSE_HOUR_CT:
+            prelim = [
+                p for p in equity_curve
+                if p.trade_date == today_ct and p.snapshot_kind == "close_5pm_ct"
+            ]
+            if prelim:
+                today_close_preliminary = True
+                equity_curve = [
+                    p for p in equity_curve
+                    if not (p.trade_date == today_ct and p.snapshot_kind == "close_5pm_ct")
+                ]
+                # Re-point the headline at the most recent REAL mark: today's
+                # 08:30 open (a genuine auction-priced mark) if present, else
+                # the prior day's close.
+                today_open = next(
+                    (p for p in equity_curve
+                     if p.trade_date == today_ct and p.snapshot_kind == "open_8am_ct"),
+                    None,
+                )
+                if today_open is not None:
+                    run.final_equity = today_open.equity
+                elif equity_curve:
+                    run.final_equity = equity_curve[-1].equity
+
         # --- Benchmark + post-tax overlays ----------------------------
         # Both align to the close_5pm_ct points of equity_curve (one
         # row per trading day at close). Open-snapshot rows are skipped
@@ -430,6 +474,7 @@ def snapshot(
             benchmark_symbol=_PAPER_BENCHMARK_SYMBOL if benchmark_curve else None,
             post_tax_curve=post_tax_curve,
             strategy_tax_rate=_PAPER_STRATEGY_STCG,
+            today_close_preliminary=today_close_preliminary,
         )
     finally:
         conn.close()

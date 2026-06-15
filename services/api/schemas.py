@@ -301,6 +301,12 @@ class PaperSnapshotResponse(_BaseResponse):
     # Strategy AFTER 30% STCG (IBKR Lite fees already in equity_curve).
     post_tax_curve: list[PaperPostTaxPoint] = Field(default_factory=list)
     strategy_tax_rate: float = 0.30
+    # True when today's close_5pm_ct mark was written by the morning
+    # (08:35 CT) tick off a partial bar and the real 17:00 CT post-close
+    # tick hasn't run yet. While true, the headline + chart show the
+    # 08:30 open mark and the 5pm card reads "awaiting"; the live
+    # intraday mark (Refresh button) is the source of truth for today.
+    today_close_preliminary: bool = False
 
 
 class PaperTradesResponse(_BaseResponse):

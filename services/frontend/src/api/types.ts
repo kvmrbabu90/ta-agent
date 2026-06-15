@@ -379,6 +379,10 @@ export interface PaperSnapshotResponse {
   benchmark_symbol: string | null;
   post_tax_curve: PaperPostTaxPoint[];
   strategy_tax_rate: number;
+  // True when today's persisted close is a morning partial-bar mark and
+  // the real 17:00 CT close hasn't landed. Headline shows the 08:30 open
+  // mark; the 5pm card reads "awaiting"; the live mark is authoritative.
+  today_close_preliminary: boolean;
 }
 
 export interface PaperTradesResponse {

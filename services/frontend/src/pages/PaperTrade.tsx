@@ -170,6 +170,7 @@ function PaperRunView({
     benchmark_symbol?: string | null;
     post_tax_curve?: { trade_date: string; equity: number }[];
     strategy_tax_rate?: number;
+    today_close_preliminary?: boolean;
   };
   trades: PaperTrade[];
   tradesLoading: boolean;
@@ -204,6 +205,11 @@ function PaperRunView({
           <div className={`text-sm ${isWinning ? 'text-emerald-400' : 'text-rose-400'}`}>
             {totalReturn >= 0 ? '+' : ''}{pctFmt(totalReturn)} since {run.first_trade_date ?? '—'}
           </div>
+          {data.today_close_preliminary && (
+            <div className="mt-1 text-[11px] text-amber-400/80" title="The morning pipeline tick wrote today's close from a partial bar. This headline shows the real 8:30 open mark until the 17:00 CT post-close tick lands the true close. Click Refresh for the live mark.">
+              showing 8:30 open mark · real close lands after 17:00 CT
+            </div>
+          )}
         </div>
       </header>
 
