@@ -347,6 +347,16 @@ class StrategyConfig:
     run_id: str = "default"
     notes: str = ""
 
+    # Live-session hygiene. When True, the engine SKIPS writing the
+    # close_5pm_ct mark for the last trade day IF that day is today (CT)
+    # and the current time is before 17:00 CT — i.e. the session is still
+    # in progress and ohlcv_daily holds only a partial bar. The morning
+    # (08:35 CT) pipeline tick would otherwise mark "today's close" off a
+    # 13-minute partial bar and persist a bogus equity. Default False so
+    # the walk-forward simulator and all historical backtests are byte-
+    # identical to before; only the live scheduled run sets it True.
+    skip_incomplete_last_close: bool = False
+
     # Storage overrides (used by walkforward_backtest to compare an honest
     # walk-forward predictions DB against the look-ahead-biased default).
     # When set, the engine reads predictions from this path instead of
@@ -835,6 +845,24 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
     pred_end = trade_dates[-1]
     log.info(f"paper backtest: {len(trade_dates)} trade days {pred_start} -> {pred_end}")
 
+    # Should we skip the last day's close mark? Only when explicitly
+    # requested (live run) AND the last trade day is today (CT) AND it's
+    # before the 17:00 CT post-close tick — i.e. ohlcv_daily currently
+    # holds a partial bar for that day. This stops the morning tick from
+    # persisting a bogus "close" off 13-minute-old intraday data. The
+    # walk-forward simulator never sets the flag, so this is a no-op there.
+    _skip_last_close = False
+    if cfg.skip_incomplete_last_close:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        _now_ct = _dt.now(_ZI("America/Chicago"))
+        if _now_ct.date() == trade_dates[-1] and _now_ct.hour < 17:
+            _skip_last_close = True
+            log.info(
+                f"paper backtest: skipping close mark for in-progress session "
+                f"{trade_dates[-1]} (now {_now_ct:%H:%M} CT < 17:00)"
+            )
+
     # Pull OHLCV for all symbols referenced. We extend the start backwards
     # by `support_lookback_days * 2` so the very first day's stop-level has
     # enough history (calendar days != trading days so widen generously).
@@ -1118,17 +1146,28 @@ def backtest(cfg: StrategyConfig = DEFAULT_CONFIG) -> dict:
                 realized_pnl += daily_interest
 
             # 7) 5 PM CT mark — using today's CLOSE for survivors.
-            long_mv_close, unreal_close = _mark_lots(open_lots, bars, d, "close")
-            equity_5pm = cash + long_mv_close
-            paper_conn.execute(
-                "INSERT OR REPLACE INTO paper_equity (run_id, trade_date, snapshot_kind, "
-                "equity, cash, long_mv, short_mv, realized_pnl, unrealized_pnl) "
-                "VALUES (?, ?, 'close_5pm_ct', ?, ?, ?, 0, ?, ?)",
-                (cfg.run_id, d.isoformat(), equity_5pm, cash, long_mv_close,
-                 realized_pnl, unreal_close),
-            )
+            #    Skipped for an in-progress session (see _skip_last_close):
+            #    the close would be marked off a partial bar. The open mark
+            #    written in step 1 stands as the day's only snapshot until
+            #    the 17:00 CT tick re-runs and lands the real close.
+            if not (_skip_last_close and d_idx == len(trade_dates) - 1):
+                long_mv_close, unreal_close = _mark_lots(open_lots, bars, d, "close")
+                equity_5pm = cash + long_mv_close
+                paper_conn.execute(
+                    "INSERT OR REPLACE INTO paper_equity (run_id, trade_date, snapshot_kind, "
+                    "equity, cash, long_mv, short_mv, realized_pnl, unrealized_pnl) "
+                    "VALUES (?, ?, 'close_5pm_ct', ?, ?, ?, 0, ?, ?)",
+                    (cfg.run_id, d.isoformat(), equity_5pm, cash, long_mv_close,
+                     realized_pnl, unreal_close),
+                )
 
-        final_long_mv, final_unreal = _mark_lots(open_lots, bars, trade_dates[-1], "close")
+        # Final equity for paper_runs. For an in-progress session, mark
+        # survivors at the OPEN (a real 08:30 auction price) rather than the
+        # partial close, so the persisted headline isn't polluted either.
+        _final_mark = "open" if _skip_last_close else "close"
+        final_long_mv, final_unreal = _mark_lots(
+            open_lots, bars, trade_dates[-1], _final_mark
+        )
         final_equity = cash + final_long_mv
         paper_conn.execute(
             "UPDATE paper_runs SET first_trade_date=?, last_trade_date=?, final_equity=?, "

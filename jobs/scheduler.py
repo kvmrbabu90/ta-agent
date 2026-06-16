@@ -157,6 +157,11 @@ def _job_paper_backtest() -> None:
             run_id="default",
             start_date=LIVE_PAPER_START_DATE,
             starting_cash=LIVE_PAPER_STARTING_CASH,
+            # Live run: don't persist a close mark for the in-progress
+            # session. The morning (08:35 CT) tick would otherwise mark
+            # today's "close" off a 13-minute partial bar. The 17:00 CT
+            # tick runs after the session ends and lands the real close.
+            skip_incomplete_last_close=True,
         )),
     )
 
