@@ -208,7 +208,22 @@ def load_macro_series(
 
 def has_macro_data(*, duckdb_path: str | None = None) -> bool:
     """Cheap check used by the pipeline to decide whether to register the
-    macro feature group."""
-    with _macro_conn(duckdb_path) as conn:
+    macro feature group.
+
+    Opens READ-ONLY so this probe coexists with other processes that hold the
+    DB open (e.g. a long-running walk-forward backtest). A read-write open
+    raises IOException under that contention, and the extension resolver
+    treats a raising availability check as "unavailable" — which silently
+    drops the macro feature group and makes inference fail with missing
+    columns. Returns False if the DB/table can't be read.
+    """
+    conn = None
+    try:
+        conn = _connect(duckdb_path, read_only=True)
         row = conn.execute("SELECT COUNT(*) FROM macro_daily").fetchone()
-    return bool(row and row[0] > 0)
+        return bool(row and row[0] > 0)
+    except duckdb.Error:
+        return False
+    finally:
+        if conn is not None:
+            conn.close()

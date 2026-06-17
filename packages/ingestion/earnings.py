@@ -255,6 +255,21 @@ def load_earnings(
 
 
 def has_earnings_data(*, duckdb_path: str | None = None) -> bool:
-    with _earnings_conn(duckdb_path) as conn:
+    """Cheap availability probe for the earnings feature group.
+
+    Opens READ-ONLY so it coexists with other processes holding the DB open
+    (e.g. a walk-forward backtest). A read-write open raises IOException under
+    that contention; the extension resolver then treats the group as
+    unavailable and silently drops it, breaking inference with missing
+    columns. Returns False if the DB/table can't be read.
+    """
+    conn = None
+    try:
+        conn = _connect(duckdb_path, read_only=True)
         row = conn.execute("SELECT COUNT(*) FROM earnings_calendar").fetchone()
         return bool(row and row[0] > 0)
+    except duckdb.Error:
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
