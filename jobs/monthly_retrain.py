@@ -39,6 +39,12 @@ from packages.modeling.train import (
 from packages.modeling.tune import tune_hyperparameters
 
 _RETAIN_THRESHOLD = 0.80  # new model's IC must be >= 0.8 * baseline to promote
+# Classification target is forward-return QUINTILE → 5 classes. Used to
+# subtract the random-guess accuracy floor (1/5 = 0.20) before applying the
+# 80%-of-baseline gate, so the gate compares EDGE over random rather than
+# raw accuracy (raw accuracy floors at 0.20, making an 80%-of-raw-accuracy
+# gate unable to ever reject a near-random model).
+_QUINTILE_N_CLASSES = 5
 _DEFAULT_HORIZON = 5
 _DEFAULT_LOOKBACK_YEARS = 10
 _TUNE_TRIALS = 20
@@ -48,20 +54,35 @@ _NON_FEATURE_COLS = {
 }
 
 
-def _baseline_ic(universe: str, target: str) -> float | None:
-    """Return the deployed model's mean_daily_rank_ic, or None if absent."""
+def _baseline_metric(universe: str, target: str) -> float | None:
+    """Return the deployed model's comparison metric, or None if absent.
+
+    The promotion gate compares the candidate's CV metric against the
+    incumbent's. The metric differs by target — and crucially, so does the
+    metadata key it's stored under:
+      regression     → mean_daily_rank_ic
+      classification → val_accuracy
+
+    BUG HISTORY: this used to look for ``mean_daily_rank_ic`` unconditionally.
+    Classification metadata never carries that key (it stores val_accuracy),
+    so the lookup always returned None for classification → _should_promote
+    saw "no baseline" → the classification head promoted EVERY retrain
+    unchecked, with no protection against a degraded model. Now keyed by
+    target so classification is gated like regression.
+    """
+    metric_key = "val_accuracy" if target == "classification" else "mean_daily_rank_ic"
     try:
         _, metadata = load_latest_model(universe, target)
     except FileNotFoundError:
         return None
     cv_metrics = metadata.get("cv_metrics", {}) or {}
     mean_block = cv_metrics.get("mean") if isinstance(cv_metrics, dict) else None
-    if isinstance(mean_block, dict) and "mean_daily_rank_ic" in mean_block:
-        v = mean_block.get("mean_daily_rank_ic")
+    if isinstance(mean_block, dict) and metric_key in mean_block:
+        v = mean_block.get(metric_key)
         return float(v) if v is not None else None
-    # Older metadata: mean_daily_rank_ic stored at top level of cv_metrics.
-    if isinstance(cv_metrics, dict) and "mean_daily_rank_ic" in cv_metrics:
-        v = cv_metrics.get("mean_daily_rank_ic")
+    # Older metadata: metric stored at top level of cv_metrics.
+    if isinstance(cv_metrics, dict) and metric_key in cv_metrics:
+        v = cv_metrics.get(metric_key)
         return float(v) if v is not None else None
     return None
 
@@ -170,7 +191,7 @@ def run_universe(
 
     for target in ("regression", "classification"):
         log.info(f"[retrain] {universe}/{target}: training")
-        baseline_ic = _baseline_ic(universe, target)
+        baseline_metric = _baseline_metric(universe, target)
         try:
             outcome = _train_one_target(
                 df, universe, target,
@@ -184,13 +205,33 @@ def run_universe(
             summary["results"][target] = {"error": repr(exc)}
             continue
 
-        new_ic = outcome["cv_metrics"].get("mean_daily_rank_ic") if target == "regression" else None
-        # For classification, fall back to val_accuracy as the comparison signal
-        # (we don't have a directly comparable rank-IC for it).
-        if target == "classification":
-            new_ic = outcome["cv_metrics"].get("val_accuracy")
+        # Per-target comparison metric. Regression uses rank-IC directly
+        # (naturally centered at 0, so the 80%-of-baseline rule is meaningful).
+        # Classification uses val_accuracy, but compared as EDGE OVER RANDOM
+        # (accuracy − 1/n_classes) so the same 80% rule actually bites — a
+        # raw-accuracy gate can't, because 80% of a ~0.24 baseline (0.19) sits
+        # below the 0.20 random floor.
+        if target == "regression":
+            new_metric = outcome["cv_metrics"].get("mean_daily_rank_ic")
+            promote, reason = _should_promote(new_metric, baseline_metric)
+        else:
+            new_metric = outcome["cv_metrics"].get("val_accuracy")
+            floor = 1.0 / _QUINTILE_N_CLASSES
+            new_edge = (new_metric - floor) if new_metric is not None else None
+            base_edge = (baseline_metric - floor) if baseline_metric is not None else None
+            promote, reason = _should_promote(new_edge, base_edge)
+            # Make the reason readable in raw-accuracy terms too.
+            if new_metric is not None and baseline_metric is not None:
+                reason += (
+                    f" [acc {new_metric:.4f} vs baseline {baseline_metric:.4f}, "
+                    f"edge-over-random basis]"
+                )
 
-        promote, reason = _should_promote(new_ic, baseline_ic)
+        # Reported values are the raw comparison metrics (rank-IC / accuracy)
+        # for human readability; the promote DECISION used the edge basis
+        # for classification.
+        new_ic = new_metric
+        baseline_ic = baseline_metric
         log.info(
             f"[retrain] {universe}/{target}: baseline={baseline_ic} new={new_ic} "
             f"promote={promote} ({reason})"
