@@ -45,14 +45,18 @@ def model_info(
 @router.get("/strict-wf/{universe}", response_model=StrictWfResponse)
 def strict_wf(
     universe: str,
+    variant: str = Query("baseline"),
     duck=Depends(get_duckdb_conn),
 ) -> StrictWfResponse:
     """Live status of the strict (per-retrain Optuna, no look-ahead) WF.
     Polls predictions.sqlite mtime + count; returns per-year metrics +
-    progress + ETA. Cached in-memory by file mtime."""
+    progress + ETA. Cached in-memory by file mtime.
+
+    ``variant`` picks which WF run to show (default 'baseline' = locked V1);
+    response.available_variants lists the selectable runs."""
     from fastapi import HTTPException
     try:
-        return get_strict_wf_status(duck, universe)
+        return get_strict_wf_status(duck, universe, variant)
     except ValueError as exc:
         # Unknown universe → 404 rather than a 500 stack trace. Happens
         # if a stale client (or someone curl-poking) requests a universe

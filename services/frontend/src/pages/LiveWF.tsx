@@ -56,7 +56,9 @@ function fmtRelativeUtc(iso: string | null): string {
 }
 
 export function LiveWFPage() {
-  const sp500 = useStrictWf('SP500');
+  const [variant, setVariant] = useState<string>('baseline');
+  const sp500 = useStrictWf('SP500', variant);
+  const variants = sp500.data?.available_variants ?? [];
 
   return (
     <div className="space-y-6">
@@ -67,7 +69,28 @@ export function LiveWFPage() {
             Strict per-retrain Optuna, look-ahead-free, survivorship-corrected. Auto-refreshes every 60s.
           </p>
         </div>
+        {variants.length > 1 && (
+          <label className="flex items-center gap-2 text-xs text-gray-400">
+            WF run
+            <select
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+              className="rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200 focus:border-emerald-500 focus:outline-none"
+            >
+              {variants.map((v) => (
+                <option key={v.key} value={v.key}>{v.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
+
+      {variant !== 'baseline' && (
+        <div className="rounded-md border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-300/90">
+          Viewing an <span className="font-semibold">experiment</span> run, not the locked V1 baseline.
+          {sp500.data?.progress && !sp500.data.progress.is_running ? '' : ' This run may still be in progress — numbers fill in as retrains complete.'}
+        </div>
+      )}
 
       <UniverseSection title="SP500 (US)" data={sp500.data} loading={sp500.isLoading} error={sp500.error} />
     </div>

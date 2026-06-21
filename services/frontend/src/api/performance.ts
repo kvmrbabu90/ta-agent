@@ -10,8 +10,14 @@ import type {
 // fetchers were removed alongside the Performance tab on 2026-06-02 —
 // the Live WF tab covers all backtest-performance views now.
 
-export function fetchStrictWf(universe: string): Promise<StrictWfResponse> {
-  return apiGet<StrictWfResponse>(`/performance/strict-wf/${encodeURIComponent(universe)}`);
+export function fetchStrictWf(
+  universe: string,
+  variant = 'baseline',
+): Promise<StrictWfResponse> {
+  return apiGet<StrictWfResponse>(
+    `/performance/strict-wf/${encodeURIComponent(universe)}`,
+    { variant },
+  );
 }
 
 export function fetchStrictWfMonth(

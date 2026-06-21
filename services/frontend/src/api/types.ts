@@ -268,6 +268,11 @@ export interface StrictWfProgress {
   is_running: boolean;
 }
 
+export interface StrictWfVariantOption {
+  key: string;
+  label: string;
+}
+
 export interface StrictWfResponse {
   universe: string;
   benchmark_symbol: string;
@@ -278,6 +283,8 @@ export interface StrictWfResponse {
   summary: StrictWfSummary;
   equity_curve: StrictWfEquityCurve;
   monthly_excess: StrictWfMonthlyExcessCell[];
+  variant: string;
+  available_variants: StrictWfVariantOption[];
 }
 
 // --- Paper trading -----------------------------------------------------------

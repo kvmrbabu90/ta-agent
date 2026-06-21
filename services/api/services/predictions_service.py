@@ -996,8 +996,58 @@ _STRICT_WF_PATHS = {
 }
 
 
-# In-memory cache keyed by (universe, preds_mtime).
-_STRICT_WF_CACHE: dict[tuple[str, float], StrictWfResponse] = {}
+# Selectable WF variants for the Live WF dashboard dropdown. "baseline" is
+# the canonical locked V1 run (_STRICT_WF_PATHS); extra variants point at
+# experiment output dirs and are only OFFERED when their predictions.sqlite
+# exists, so the dropdown never shows an empty option. Reading a variant
+# is non-destructive — each has its own predictions + analysis_live sqlite,
+# so the baseline (V1 locked) numbers are never touched.
+_STRICT_WF_VARIANTS: dict[str, dict[str, dict[str, str]]] = {
+    "SP500": {
+        "nogate": {
+            "label": "No-gate · repaired data",
+            "dir": "data/processed/wf_gatetest_nogate",
+        },
+        "gated": {
+            "label": "Promote/retain gate",
+            "dir": "data/processed/wf_gatetest_gated",
+        },
+    },
+}
+
+
+def _resolve_strict_wf_cfg(universe: str, variant: str) -> dict:
+    """Path cfg for (universe, variant). variant='baseline' (or any unknown
+    variant) → the canonical _STRICT_WF_PATHS entry. Extra variants derive
+    their paths from the experiment dir."""
+    base = _STRICT_WF_PATHS.get(universe)
+    if base is None:
+        raise ValueError(f"no strict-WF config for universe={universe!r}")
+    extras = _STRICT_WF_VARIANTS.get(universe, {})
+    if variant == "baseline" or variant not in extras:
+        return base
+    d = extras[variant]["dir"]
+    return {
+        "preds": f"{d}/predictions.sqlite",
+        "paper": f"{d}/analysis_live.sqlite",
+        "commission": base["commission"],
+        "expected_retrains": base["expected_retrains"],
+    }
+
+
+def _available_strict_wf_variants(universe: str) -> list[dict[str, str]]:
+    """{key,label} for every variant whose predictions.sqlite exists on disk.
+    'baseline' is always offered (it's the locked V1 run)."""
+    import os
+    out = [{"key": "baseline", "label": "V1 baseline · always-newest"}]
+    for key, meta in _STRICT_WF_VARIANTS.get(universe, {}).items():
+        if os.path.exists(f"{meta['dir']}/predictions.sqlite"):
+            out.append({"key": key, "label": meta["label"]})
+    return out
+
+
+# In-memory cache keyed by (universe, variant, preds_mtime).
+_STRICT_WF_CACHE: dict[tuple[str, str, float], StrictWfResponse] = {}
 
 # Process-local lock that serializes paper-engine rebuilds when multiple
 # API requests hit the strict-WF endpoint concurrently. Without this,
@@ -1820,14 +1870,18 @@ def get_strict_wf_month_detail(
 
 
 def get_strict_wf_status(
-    duck: duckdb.DuckDBPyConnection, universe: str
+    duck: duckdb.DuckDBPyConnection, universe: str, variant: str = "baseline"
 ) -> StrictWfResponse:
     """Live snapshot of a strict-WF run. Cached in memory by predictions.sqlite
-    mtime so repeated requests during the same retrain are O(1)."""
+    mtime so repeated requests during the same retrain are O(1).
+
+    ``variant`` selects WHICH WF run to read (default 'baseline' = the locked
+    V1 run). Experiment variants read from their own sqlite files, so picking
+    one never mutates the baseline.
+    """
     import os
-    cfg = _STRICT_WF_PATHS.get(universe)
-    if cfg is None:
-        raise ValueError(f"no strict-WF config for universe={universe!r}")
+    cfg = _resolve_strict_wf_cfg(universe, variant)
+    available = _available_strict_wf_variants(universe)
 
     bench_sym, bench_label, currency = _BENCHMARK.get(
         universe, ("SPY", "SPY B&H", "USD")
@@ -1848,11 +1902,13 @@ def get_strict_wf_status(
             progress=progress,
             years=[],
             summary=StrictWfSummary(),
+            variant=variant,
+            available_variants=available,
         )
 
-    # Cache by mtime
+    # Cache by (universe, variant, mtime)
     mtime = os.path.getmtime(preds_path)
-    cache_key = (universe, mtime)
+    cache_key = (universe, variant, mtime)
     cached = _STRICT_WF_CACHE.get(cache_key)
     if cached is not None:
         # Refresh just the progress timestamp (so ETA stays current)
@@ -1869,6 +1925,8 @@ def get_strict_wf_status(
             progress=progress,
             years=[],
             summary=StrictWfSummary(),
+            variant=variant,
+            available_variants=available,
         )
 
     years, year_window = _strict_wf_per_year(paper_path, run_id)
@@ -2011,6 +2069,8 @@ def get_strict_wf_status(
         summary=summary,
         equity_curve=equity_curve,
         monthly_excess=monthly_excess,
+        variant=variant,
+        available_variants=available,
     )
     # Cap cache size at a few entries to avoid leak across many mtime changes.
     if len(_STRICT_WF_CACHE) > 8:

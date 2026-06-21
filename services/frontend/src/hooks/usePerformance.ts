@@ -10,10 +10,10 @@ import {
 // alongside the Performance tab on 2026-06-02 — the Live WF tab
 // covers all backtest-performance views now.
 
-export function useStrictWf(universe: string, refetchMs = 60_000) {
+export function useStrictWf(universe: string, variant = 'baseline', refetchMs = 60_000) {
   return useQuery({
-    queryKey: ['strict-wf', universe],
-    queryFn: () => fetchStrictWf(universe),
+    queryKey: ['strict-wf', universe, variant],
+    queryFn: () => fetchStrictWf(universe, variant),
     enabled: Boolean(universe),
     refetchInterval: refetchMs,
     staleTime: 30_000,

@@ -666,6 +666,12 @@ class StrictWfEquityCurve(_BaseResponse):
     benchmark_post_ltcg_endpoint: float | None = None
 
 
+class StrictWfVariantOption(_BaseResponse):
+    """One selectable WF run for the Live WF dashboard dropdown."""
+    key: str    # 'baseline' | 'gated' | 'nogate' | ...
+    label: str  # human-readable
+
+
 class StrictWfResponse(_BaseResponse):
     universe: str
     benchmark_symbol: str
@@ -676,3 +682,8 @@ class StrictWfResponse(_BaseResponse):
     summary: StrictWfSummary
     equity_curve: StrictWfEquityCurve = Field(default_factory=StrictWfEquityCurve)
     monthly_excess: list[StrictWfMonthlyExcessCell] = Field(default_factory=list)
+    # Which WF run this payload reflects, and the runs available to pick
+    # from (only those whose predictions exist on disk). 'baseline' is the
+    # canonical locked V1 run; others are experiment variants.
+    variant: str = "baseline"
+    available_variants: list[StrictWfVariantOption] = Field(default_factory=list)
