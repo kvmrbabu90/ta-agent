@@ -22,8 +22,11 @@ calibrated probabilities, and red-flag thresholds for "too good" metrics.
 - [x] Purged walk-forward CV, LightGBM training, Optuna tuning, isotonic calibration, file-based model registry
 - [x] Daily inference + SHAP top-K + SQLite predictions log + automatic settlement
 - [x] FastAPI backend (read-only) at `:8000` with OpenAPI docs at `/docs`
-- [x] React + Vite + TypeScript frontend at `:5173` (Dashboard / Stock detail / Performance)
-- [x] APScheduler-based orchestrator + monthly retrain with promote/retain
+- [x] React + Vite + TypeScript frontend at `:5173` (Dashboard / Stock detail / Performance / Paper Trade / Live Alpaca)
+- [x] APScheduler-based orchestrator + monthly retrain with per-target promote/retain gate (both regression AND classification heads gated)
+- [x] Paper-trading engine (overlapping 5-day conviction portfolios + rolling-low stop) with equity curve, positions, and on-demand live intraday mark
+- [x] Live execution via Alpaca paper account (market-on-open orders, engine-managed stops, reconciliation)
+- [x] Strict per-retrain walk-forward backtest harness (look-ahead-free, survivorship-corrected)
 - [x] Health-check script + ops scripts (freshen, backtest summary)
 - [x] 140 unit tests + 4 integration tests
 
@@ -35,8 +38,10 @@ See [`docs/architecture.md`](docs/architecture.md) for diagrams and details.
 data/processed/
     market.duckdb          (OHLCV + membership + macro)
     predictions.sqlite     (predictions log)
+    paper.sqlite           (paper-trade equity curve, positions, trades, runs)
     features_*.parquet     (wide feature panel per universe)
     training_*.parquet     (features + labels + in_universe)
+    walkforward_10yr_strict/    (strict per-retrain WF: predictions + replay)
 data/models/
     {universe}_{target}_{ts}/   (model.txt, calibrators.pkl, metadata.json, feature_importance.csv)
     retrain_reports/{date}.json (promote/retain decisions)
@@ -165,6 +170,56 @@ In either mode, refresh the Kite token once a day:
 ```powershell
 python -m scripts.kite_login
 ```
+
+## Paper trading & live execution (Kubera)
+
+On top of the ranking models sits a paper-trading strategy and an optional
+live-execution path. The strategy is **long-only, top 5 by conviction**:
+
+- **Conviction score** = `predicted_return × (1 + (top_quintile_proba − bottom_quintile_proba))`.
+- **Overlapping 5-day portfolios** — open a new slice each trading day,
+  force-close after 5 trading days. Slice budget = `current_equity / 5`,
+  weighted within the slice by `combined_score / ATR(14)` (conviction ×
+  inverse-vol).
+- **Stop-loss** at 0.3% below the 3-day rolling low; skipped when support is
+  already broken (the "broken-support guard").
+- **Rebalanced at the 8:30 CT open** (orders fill at the NYSE opening auction;
+  the snapshot row is written by the 08:35 CT pipeline tick).
+- **IBKR Lite cost model** (regulatory pass-throughs on sells only).
+
+The paper engine (`packages/paper_trading/engine.py`) replays logged
+predictions into `paper.sqlite`. Equity is snapshotted twice a day:
+`open_8am_ct` (the 8:30 auction mark) and `close_5pm_ct` (post-close). The
+morning tick deliberately does **not** persist a close mark for the
+in-progress session — that would mark "today's close" off a partial bar —
+so the real close only lands after the 17:00 CT tick.
+
+API surface (all under `/paper`):
+
+| endpoint | purpose |
+|---|---|
+| `/paper/snapshot` | run summary, equity curve, positions, SPY benchmark, post-tax overlay |
+| `/paper/trades` | recent fills (open/close/stop) |
+| `/paper/next-day-picks` | the 5 picks the engine will trade at the next open |
+| `/paper/intraday-mark` | **on-demand** mid-session equity from live quotes (not persisted) — backs the dashboard's Refresh button |
+
+**Live execution** (`services/alpaca/`) mirrors the simulator against an
+Alpaca paper account: market-on-open (OPG) entries, engine-managed
+rolling-low stops as GTC orders, and a reconciliation pass that marks
+stopped-out lots. Start/stop from the **Live Alpaca** dashboard tab.
+
+### Strict walk-forward backtest
+
+`scripts/walkforward_backtest.py` runs an honest, look-ahead-free WF: for
+each monthly retrain date it trains on data ending strictly before that
+date (with embargo), then predicts forward until the next retrain. Outputs
+land in `data/processed/walkforward_10yr_strict/` and surface on the
+**Live WF** dashboard tab.
+
+> Note: the live monthly retrain applies a **promote/retain gate** (keep the
+> incumbent unless the candidate's CV metric clears 80% of baseline) on both
+> heads; the WF harness always deploys the freshly-trained model. These are
+> different model-selection policies — see `jobs/monthly_retrain.py`.
 
 ## Common tasks
 
