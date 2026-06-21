@@ -438,8 +438,6 @@ function EquityCurveChart({
   const EQUITY_CHART_PREFS_KEY = 'wf-equity-chart-prefs-v1';
   type EquityChartPrefs = {
     showPreTax?: boolean;
-    brushStartDate?: string;
-    brushEndDate?: string;
   };
   const readPrefs = (): EquityChartPrefs => {
     try {
@@ -460,61 +458,32 @@ function EquityCurveChart({
     () => readPrefs().showPreTax ?? true,
   );
   // Brush window indices. `undefined` = no brush selection (Recharts
-  // shows the full range). Resolved from saved dates once the curve
-  // arrives; persisted back to dates on every user drag.
+  // shows the full range). Kept in React state only: the zoom survives the
+  // 60s auto-refresh (the component stays mounted) but resets to full range
+  // on a page reload or variant switch. We deliberately do NOT persist the
+  // zoom — a saved window anchored to old dates (or a different variant's
+  // shorter series) used to silently hide the whole curve, leaving the
+  // chart stuck zoomed into the first few weeks of 2014.
   const [brushStart, setBrushStart] = useState<number | undefined>(undefined);
   const [brushEnd, setBrushEnd] = useState<number | undefined>(undefined);
 
-  // Resolve saved brush dates → indices once the curve dates load (and
-  // again if they change, e.g. a new retrain extends the series). If
-  // the saved dates are no longer present in the data, fall back to the
-  // nearest date on each side; if either fallback fails, clear the
-  // brush back to full range rather than show something wrong.
+  // Reset the brush to full range whenever the underlying series changes
+  // (variant switch / first load) so a new dataset always opens un-zoomed.
   useEffect(() => {
-    const dates = curve?.dates ?? [];
-    if (dates.length === 0) return;
-    const prefs = readPrefs();
-    if (!prefs.brushStartDate || !prefs.brushEndDate) return;
-    const findIdx = (target: string): number | undefined => {
-      const exact = dates.indexOf(target);
-      if (exact >= 0) return exact;
-      // Nearest-by-string fallback (date strings sort lexically since
-      // they're ISO YYYY-MM-DD). Find first date >= target.
-      const idx = dates.findIndex((d) => d >= target);
-      return idx >= 0 ? idx : dates.length - 1;
-    };
-    const s = findIdx(prefs.brushStartDate);
-    const e = findIdx(prefs.brushEndDate);
-    if (s != null && e != null && e > s) {
-      setBrushStart(s);
-      setBrushEnd(e);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curve?.dates]);
+    setBrushStart(undefined);
+    setBrushEnd(undefined);
+  }, [curve?.dates?.length]);
 
-  // Persist current prefs whenever any of them change. Brush window is
-  // stored as dates (anchored to the same points as the time series
-  // grows). Toggle is stored as boolean.
+  // Persist only the pre-tax toggle (not the transient zoom).
   useEffect(() => {
     try {
-      const dates = curve?.dates ?? [];
-      const prefs: EquityChartPrefs = {
-        showPreTax,
-        brushStartDate:
-          brushStart != null && brushStart >= 0 && brushStart < dates.length
-            ? dates[brushStart]
-            : undefined,
-        brushEndDate:
-          brushEnd != null && brushEnd >= 0 && brushEnd < dates.length
-            ? dates[brushEnd]
-            : undefined,
-      };
-      localStorage.setItem(EQUITY_CHART_PREFS_KEY, JSON.stringify(prefs));
+      localStorage.setItem(
+        EQUITY_CHART_PREFS_KEY, JSON.stringify({ showPreTax } as EquityChartPrefs),
+      );
     } catch {
       /* localStorage can throw in private mode / when quota is hit */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showPreTax, brushStart, brushEnd, curve?.dates]);
+  }, [showPreTax]);
 
   // Reset everything back to defaults (full range, pre-tax visible) and
   // wipe the persisted prefs so a subsequent refresh shows the same
