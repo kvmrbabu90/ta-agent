@@ -1008,7 +1008,7 @@ _STRICT_WF_VARIANTS: dict[str, dict[str, dict[str, str]]] = {
         # gated run; the locked V1 baseline already represents the
         # always-newest policy, so it serves as the no-gate comparator.
         "gated": {
-            "label": "Promote/retain gate",
+            "label": "Live-design backtest (gated)",
             "dir": "data/processed/wf_gatetest_gated",
         },
     },
