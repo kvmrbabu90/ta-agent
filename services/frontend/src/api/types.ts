@@ -273,6 +273,13 @@ export interface StrictWfVariantOption {
   label: string;
 }
 
+export interface StrictWfGateDecision {
+  year: number;
+  month: number;
+  reg_decision: string | null; // 'deploy' | 'retain'
+  cls_decision: string | null;
+}
+
 export interface StrictWfResponse {
   universe: string;
   benchmark_symbol: string;
@@ -285,6 +292,7 @@ export interface StrictWfResponse {
   monthly_excess: StrictWfMonthlyExcessCell[];
   variant: string;
   available_variants: StrictWfVariantOption[];
+  gate_decisions: StrictWfGateDecision[];
 }
 
 // --- Paper trading -----------------------------------------------------------

@@ -23,6 +23,7 @@ import { ErrorMessage } from '@/components/ErrorMessage';
 import { EmptyState } from '@/components/EmptyState';
 import type {
   StrictWfEquityCurve,
+  StrictWfGateDecision,
   StrictWfMonthDetail,
   StrictWfMonthlyExcessCell,
   StrictWfResponse,
@@ -150,6 +151,7 @@ function UniverseSection({
           <MonthlyExcessHeatmap
             cells={data.monthly_excess}
             benchKey={data.benchmark_symbol}
+            gateDecisions={data.gate_decisions}
             onCellClick={(c) => setSelectedCell({ year: c.year, month: c.month })}
           />
           <YearTable years={data.years} benchKey={data.benchmark_symbol} />
@@ -984,15 +986,23 @@ type HeatmapMode = 'excess' | 'strategy';
 function MonthlyExcessHeatmap({
   cells,
   benchKey,
+  gateDecisions,
   onCellClick,
 }: {
   cells: StrictWfMonthlyExcessCell[];
   benchKey: string;
+  gateDecisions?: StrictWfGateDecision[];
   onCellClick: (cell: StrictWfMonthlyExcessCell) => void;
 }) {
   const [mode, setMode] = useState<HeatmapMode>('excess');
 
   if (!cells || cells.length === 0) return null;
+
+  // (year, month) → gate decision. Only gated variants populate this; the
+  // V1 baseline always deploys, so the map is empty and no markers render.
+  const gateByYM = new Map<string, StrictWfGateDecision>();
+  for (const g of gateDecisions ?? []) gateByYM.set(`${g.year}-${g.month}`, g);
+  const hasGate = gateByYM.size > 0;
 
   // Build a (year, month) → cell index so we can render the grid even
   // when some cells are missing (e.g. partial first/last year).
@@ -1055,8 +1065,22 @@ function MonthlyExcessHeatmap({
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
       <div className="mb-2 flex items-baseline justify-between gap-3">
-        <div className="text-[11px] uppercase tracking-wider text-gray-500">
-          {headerLabel}
+        <div className="flex items-center gap-3">
+          <div className="text-[11px] uppercase tracking-wider text-gray-500">
+            {headerLabel}
+          </div>
+          {hasGate && (
+            <div className="flex items-center gap-2 text-[10px] text-gray-500" title="Promote/retain gate decision per month (regression head). Solid = a freshly-trained model was adopted; ring = the gate kept the incumbent (model reused).">
+              <span className="inline-flex items-center gap-1">
+                <span className="h-[6px] w-[6px] rounded-full" style={{ backgroundColor: '#fcd34d' }} />
+                adapted
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-[6px] w-[6px] rounded-full" style={{ border: '1px solid rgba(252,211,77,0.7)' }} />
+                reused
+              </span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {/* Mode toggle */}
@@ -1134,13 +1158,23 @@ function MonthlyExcessHeatmap({
                   const cell = cellByYM.get(`${y}-${month}`);
                   const v = valueFor(cell);
                   const clickable = !!cell;
+                  const gate = gateByYM.get(`${y}-${month}`);
+                  // Marker reflects the REGRESSION head (the one that
+                  // actually retains often). Solid dot = a fresh model was
+                  // deployed that month; hollow ring = the gate kept the
+                  // incumbent (model reused).
+                  const regDeploy = gate?.reg_decision === 'deploy';
+                  const regRetain = gate?.reg_decision === 'retain';
+                  const gateTip = gate
+                    ? `\nModel: regression ${gate.reg_decision ?? '—'}, classification ${gate.cls_decision ?? '—'}`
+                    : '';
                   return (
                     <td
                       key={month}
-                      title={cellTooltip(cell) + (clickable ? '\n(click for details)' : '')}
+                      title={cellTooltip(cell) + gateTip + (clickable ? '\n(click for details)' : '')}
                       onClick={clickable ? () => onCellClick(cell!) : undefined}
                       className={[
-                        'h-7 min-w-[44px] rounded text-center font-mono text-[10px] text-gray-100',
+                        'relative h-7 min-w-[44px] rounded text-center font-mono text-[10px] text-gray-100',
                         clickable
                           ? 'cursor-pointer hover:outline hover:outline-1 hover:outline-gray-300/50'
                           : '',
@@ -1149,6 +1183,16 @@ function MonthlyExcessHeatmap({
                         backgroundColor: cellBg(v),
                       }}
                     >
+                      {(regDeploy || regRetain) && (
+                        <span
+                          className="pointer-events-none absolute left-[3px] top-[3px] h-[6px] w-[6px] rounded-full"
+                          style={
+                            regDeploy
+                              ? { backgroundColor: '#fcd34d' }                       // solid amber = adapted
+                              : { border: '1px solid rgba(252,211,77,0.7)' }         // ring = retained
+                          }
+                        />
+                      )}
                       {cellText(v)}
                     </td>
                   );

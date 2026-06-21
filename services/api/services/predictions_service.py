@@ -1010,6 +1010,9 @@ _STRICT_WF_VARIANTS: dict[str, dict[str, dict[str, str]]] = {
         "gated": {
             "label": "Live-design backtest (gated)",
             "dir": "data/processed/wf_gatetest_gated",
+            # WF run log — parsed for live per-month gate decisions while the
+            # run is in progress (report.json is only written at completion).
+            "log": "logs/wf_gated.log",
         },
     },
 }
@@ -1032,6 +1035,56 @@ def _resolve_strict_wf_cfg(universe: str, variant: str) -> dict:
         "commission": base["commission"],
         "expected_retrains": base["expected_retrains"],
     }
+
+
+def _strict_wf_gate_decisions(universe: str, variant: str) -> list[dict]:
+    """Per-month promote/retain decisions for a gated variant.
+
+    Sources, in order of preference: the run's report.json (structured,
+    written at completion), then the live WF log (parsed for in-progress
+    runs). The log overlays the report so an in-progress run still shows
+    decisions for retrains past the last report. Baseline (no gate) → [].
+    """
+    import os, json, re
+    meta = _STRICT_WF_VARIANTS.get(universe, {}).get(variant)
+    if meta is None:
+        return []  # baseline / unknown → no gate
+    out: dict[tuple[int, int], dict] = {}
+    # 1. report.json (final, structured)
+    report_path = os.path.join(meta["dir"], "report.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, encoding="utf-8") as f:
+                rep = json.load(f)
+            for r in rep.get("retrains", []):
+                rd = r.get("retrain_date")
+                if not rd:
+                    continue
+                out[(int(rd[:4]), int(rd[5:7]))] = {
+                    "reg": r.get("gate_reg_decision"),
+                    "cls": r.get("gate_cls_decision"),
+                }
+        except Exception:  # noqa: BLE001
+            pass
+    # 2. live log (overlays — covers retrains not yet in the report)
+    logp = meta.get("log")
+    if logp and os.path.exists(logp):
+        pat = re.compile(r"(\d{4}-\d{2}-\d{2}): GATE reg=(\w+).*?cls=(\w+)")
+        try:
+            with open(logp, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "GATE reg=" not in line:
+                        continue
+                    mt = pat.search(line)
+                    if mt:
+                        rd, reg, cls = mt.group(1), mt.group(2), mt.group(3)
+                        out[(int(rd[:4]), int(rd[5:7]))] = {"reg": reg, "cls": cls}
+        except Exception:  # noqa: BLE001
+            pass
+    return [
+        {"year": y, "month": m, "reg_decision": v["reg"], "cls_decision": v["cls"]}
+        for (y, m), v in sorted(out.items())
+    ]
 
 
 def _available_strict_wf_variants(universe: str) -> list[dict[str, str]]:
@@ -1881,6 +1934,7 @@ def get_strict_wf_status(
     import os
     cfg = _resolve_strict_wf_cfg(universe, variant)
     available = _available_strict_wf_variants(universe)
+    gate_decs = _strict_wf_gate_decisions(universe, variant)
 
     bench_sym, bench_label, currency = _BENCHMARK.get(
         universe, ("SPY", "SPY B&H", "USD")
@@ -1903,6 +1957,7 @@ def get_strict_wf_status(
             summary=StrictWfSummary(),
             variant=variant,
             available_variants=available,
+            gate_decisions=gate_decs,
         )
 
     # Cache by (universe, variant, mtime)
@@ -1926,6 +1981,7 @@ def get_strict_wf_status(
             summary=StrictWfSummary(),
             variant=variant,
             available_variants=available,
+            gate_decisions=gate_decs,
         )
 
     years, year_window = _strict_wf_per_year(paper_path, run_id)
@@ -2070,6 +2126,7 @@ def get_strict_wf_status(
         monthly_excess=monthly_excess,
         variant=variant,
         available_variants=available,
+        gate_decisions=gate_decs,
     )
     # Cap cache size at a few entries to avoid leak across many mtime changes.
     if len(_STRICT_WF_CACHE) > 8:

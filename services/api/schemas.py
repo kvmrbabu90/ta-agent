@@ -672,6 +672,20 @@ class StrictWfVariantOption(_BaseResponse):
     label: str  # human-readable
 
 
+class StrictWfGateDecision(_BaseResponse):
+    """Per-retrain promote/retain gate outcome for one calendar month.
+
+    Only populated for gated variants (the V1 baseline always deploys the
+    freshest model, so it has none). 'deploy' = a freshly-trained model was
+    adopted that month; 'retain' = the gate rejected the candidate and the
+    incumbent model kept trading.
+    """
+    year: int
+    month: int  # 1..12
+    reg_decision: str | None = None  # 'deploy' | 'retain'
+    cls_decision: str | None = None
+
+
 class StrictWfResponse(_BaseResponse):
     universe: str
     benchmark_symbol: str
@@ -687,3 +701,5 @@ class StrictWfResponse(_BaseResponse):
     # canonical locked V1 run; others are experiment variants.
     variant: str = "baseline"
     available_variants: list[StrictWfVariantOption] = Field(default_factory=list)
+    # Per-month deploy/retain gate outcomes (gated variants only).
+    gate_decisions: list[StrictWfGateDecision] = Field(default_factory=list)
