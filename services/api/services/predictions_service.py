@@ -1004,10 +1004,9 @@ _STRICT_WF_PATHS = {
 # so the baseline (V1 locked) numbers are never touched.
 _STRICT_WF_VARIANTS: dict[str, dict[str, dict[str, str]]] = {
     "SP500": {
-        "nogate": {
-            "label": "No-gate · repaired data",
-            "dir": "data/processed/wf_gatetest_nogate",
-        },
+        # No-gate control run was dropped 2026-06-20 to focus all CPU on the
+        # gated run; the locked V1 baseline already represents the
+        # always-newest policy, so it serves as the no-gate comparator.
         "gated": {
             "label": "Promote/retain gate",
             "dir": "data/processed/wf_gatetest_gated",
