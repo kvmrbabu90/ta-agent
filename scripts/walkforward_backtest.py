@@ -52,7 +52,7 @@ from packages.inference.tracking import log_predictions
 from packages.labels.dataset import build_training_dataset
 from packages.modeling.calibrate import calibrate_classifier
 from packages.modeling.splits import PurgedWalkForwardSplit
-from packages.modeling.train import TrainConfig, train_final_model
+from packages.modeling.train import TrainConfig, train_final_model, train_with_cv
 from packages.modeling.tune import tune_hyperparameters
 
 _DEFAULT_HORIZON = 5
@@ -210,9 +210,17 @@ def _train_models_through(
     optuna_trials: int = 20,
     optuna_n_jobs: int = 1,
     cv_min_train_days: int = 504,
-) -> tuple[Any, Any, list[str], TrainConfig, TrainConfig]:
+    compute_cv: bool = False,
+) -> tuple[Any, Any, list[str], TrainConfig, TrainConfig, dict[str, float | None]]:
     """Train regression + (calibrated) classification models on data
     through `final_train_end`.
+
+    When ``compute_cv=True``, also runs purged-WF cross-validation on the
+    training slice and returns each target's CV metric (regression
+    mean_daily_rank_ic, classification val_accuracy) in the trailing dict.
+    These feed the promote/retain gate (see run_walkforward's ``gate``);
+    when False the dict's values are None and no CV is run (the original,
+    faster no-gate path).
 
     When ``per_retrain_optuna=True``, hyperparameters are re-tuned via
     Optuna on the training slice BEFORE the final model is fit — this
@@ -288,7 +296,32 @@ def _train_models_through(
         cls_model = calibrate_classifier(cls_booster, X_cal, y_cal)
     else:
         cls_model = cls_booster
-    return reg_booster, cls_model, feature_cols, reg_cfg_used, cls_cfg_used
+
+    # Optional CV pass for the promote/retain gate. Mirrors the live path
+    # (jobs/monthly_retrain): regression → mean_daily_rank_ic,
+    # classification → val_accuracy, both from purged-WF CV on the same
+    # training slice with the same hyperparameters used for the final fit.
+    cv_metrics: dict[str, float | None] = {"reg_ic": None, "cls_acc": None}
+    if compute_cv:
+        splitter = PurgedWalkForwardSplit(
+            n_folds=5, horizon_days=horizon_days, embargo_days=horizon_days,
+        )
+        try:
+            reg_cv = train_with_cv(
+                df, feature_cols, f"fwd_return_{horizon_days}d", splitter, reg_cfg_used,
+            )
+            cv_metrics["reg_ic"] = reg_cv["mean_metrics"].get("mean_daily_rank_ic")
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"gate CV (regression) failed at {final_train_end}: {exc!r}")
+        try:
+            cls_cv = train_with_cv(
+                df, feature_cols, f"fwd_quintile_{horizon_days}d", splitter, cls_cfg_used,
+            )
+            cv_metrics["cls_acc"] = cls_cv["mean_metrics"].get("val_accuracy")
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"gate CV (classification) failed at {final_train_end}: {exc!r}")
+
+    return reg_booster, cls_model, feature_cols, reg_cfg_used, cls_cfg_used, cv_metrics
 
 
 def _predict_window(
@@ -412,8 +445,19 @@ def run_walkforward(
     optuna_n_jobs: int = 1,
     device: str = "cpu",
     cv_min_train_days: int = 504,
+    gate: bool = False,
 ) -> dict:
-    """Top-level entry. Returns a summary dict; report.json is written too."""
+    """Top-level entry. Returns a summary dict; report.json is written too.
+
+    When ``gate=True``, applies the live promote/retain gate (jobs/
+    monthly_retrain): at each retrain a candidate is trained and CV-scored,
+    but only DEPLOYED if its CV metric clears 80% of the currently-deployed
+    model's (regression on rank-IC, classification on accuracy-edge-over-
+    random). Otherwise the incumbent keeps predicting. Heads are gated
+    INDEPENDENTLY — exactly as live — so a retain-reg + promote-cls mismatch
+    can occur. ``gate=False`` (default) reproduces the original policy:
+    always deploy the freshly-trained model.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     preds_path = str(out_dir / "predictions.sqlite")
     paper_path = str(out_dir / "paper.sqlite")
@@ -477,7 +521,7 @@ def run_walkforward(
 
     summary: dict = {
         "universe": universe, "start": start.isoformat(), "end": end.isoformat(),
-        "horizon_days": horizon_days, "retrains": [], "errors": [],
+        "horizon_days": horizon_days, "gate": gate, "retrains": [], "errors": [],
         "predictions_path": preds_path, "paper_path": paper_path,
     }
     t_start_total = time.monotonic()
@@ -485,6 +529,17 @@ def run_walkforward(
     # Iterate retrain windows. Each retrain is responsible for predicting
     # every trading day in [retrain_date, next_retrain_date).
     retrain_dates_padded = retrain_dates + [end + timedelta(days=1)]
+
+    # Promote/retain gate state (only used when gate=True). Tracks the
+    # currently-DEPLOYED model per head + the CV metric it was promoted on.
+    # Reuses the live gate logic so the experiment is faithful to production.
+    from jobs.monthly_retrain import _should_promote, _QUINTILE_N_CLASSES
+    _floor = 1.0 / _QUINTILE_N_CLASSES
+    dep_reg_model = dep_cls_model = dep_feature_cols = None
+    dep_reg_ic: float | None = None
+    dep_cls_acc: float | None = None
+    if gate:
+        log.info("walkforward: PROMOTE/RETAIN GATE enabled (heads gated independently)")
 
     # Resume support: check which retrain windows already have predictions
     # in the output sqlite. Skip those entirely (no train, no predict).
@@ -529,7 +584,7 @@ def run_walkforward(
             continue
         t_retrain = time.monotonic()
         try:
-            reg_model, cls_model, feature_cols, reg_cfg_used, cls_cfg_used = _retry_on_lock(
+            reg_model, cls_model, feature_cols, reg_cfg_used, cls_cfg_used, cand_cv = _retry_on_lock(
                 lambda: _train_models_through(
                     universe, train_end,
                     horizon_days=horizon_days,
@@ -538,6 +593,7 @@ def run_walkforward(
                     optuna_trials=optuna_trials,
                     optuna_n_jobs=optuna_n_jobs,
                     cv_min_train_days=cv_min_train_days,
+                    compute_cv=gate,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -546,14 +602,49 @@ def run_walkforward(
             continue
         train_seconds = time.monotonic() - t_retrain
 
+        # --- Promote/retain gate (heads gated independently) -----------------
+        # Default (gate=False): use the freshly-trained candidate for both
+        # heads. With gate=True: keep the incumbent for a head whose candidate
+        # CV metric doesn't clear 80% of the deployed model's.
+        reg_decision = cls_decision = "deploy"  # for reporting
+        use_reg, use_cls, use_feats = reg_model, cls_model, feature_cols
+        if gate:
+            cand_reg_ic = cand_cv.get("reg_ic")
+            cand_cls_acc = cand_cv.get("cls_acc")
+            # Regression head: compare rank-IC directly.
+            reg_promote, _ = _should_promote(cand_reg_ic, dep_reg_ic)
+            if dep_reg_model is None or reg_promote:
+                dep_reg_model, dep_reg_ic = reg_model, cand_reg_ic
+                reg_decision = "deploy" if dep_reg_model is not None else "deploy"
+            else:
+                reg_decision = "retain"
+            # Classification head: compare accuracy EDGE over random.
+            cand_cls_edge = (cand_cls_acc - _floor) if cand_cls_acc is not None else None
+            dep_cls_edge = (dep_cls_acc - _floor) if dep_cls_acc is not None else None
+            cls_promote, _ = _should_promote(cand_cls_edge, dep_cls_edge)
+            if dep_cls_model is None or cls_promote:
+                dep_cls_model, dep_cls_acc = cls_model, cand_cls_acc
+                cls_decision = "deploy"
+            else:
+                cls_decision = "retain"
+            # Predict the window with whatever is currently deployed.
+            use_reg, use_cls = dep_reg_model, dep_cls_model
+            dep_feature_cols = feature_cols  # features are stable across retrains
+            use_feats = dep_feature_cols
+            log.info(
+                f"  [{i+1}/{len(retrain_dates)}] {rd}: GATE "
+                f"reg={reg_decision}(cand_ic={cand_reg_ic}) "
+                f"cls={cls_decision}(cand_acc={cand_cls_acc})"
+            )
+
         reg_version = f"wf_{universe}_regression_{rd.isoformat()}"
         cls_version = f"wf_{universe}_classification_{rd.isoformat()}"
         t_predict = time.monotonic()
         try:
             n_rows = _retry_on_lock(
                 lambda: _predict_window(
-                    universe, days_in_window, feature_cols,
-                    reg_model, cls_model, horizon_days,
+                    universe, days_in_window, use_feats,
+                    use_reg, use_cls, horizon_days,
                     reg_version=reg_version, cls_version=cls_version,
                     sqlite_path=preds_path,
                 )
@@ -578,6 +669,11 @@ def run_walkforward(
             "n_predictions_logged": n_rows,
             "train_seconds": round(train_seconds, 1),
             "predict_seconds": round(predict_seconds, 1),
+            # Gate bookkeeping (None when gate disabled).
+            "gate_reg_decision": reg_decision if gate else None,
+            "gate_cls_decision": cls_decision if gate else None,
+            "gate_cand_reg_ic": cand_cv.get("reg_ic") if gate else None,
+            "gate_cand_cls_acc": cand_cv.get("cls_acc") if gate else None,
             "reg_hyperparams": {
                 "learning_rate": reg_cfg_used.learning_rate,
                 "num_leaves": reg_cfg_used.num_leaves,
@@ -673,6 +769,13 @@ def main() -> int:
         help="LightGBM device. 'gpu' requires a GPU-enabled LightGBM build.",
     )
     p.add_argument(
+        "--gate", action="store_true",
+        help="Apply the live promote/retain gate: at each retrain, CV-score "
+             "the candidate and keep the incumbent unless the candidate clears "
+             "80%% of its CV metric (per head, independently). Default off = "
+             "always deploy the freshly-trained model (original WF policy).",
+    )
+    p.add_argument(
         "--cv-min-train-days", type=int, default=504,
         help="Minimum training-fold size for purged walk-forward CV. "
              "Default 504 (~2 years). Lower (e.g. 252) when the universe "
@@ -692,6 +795,7 @@ def main() -> int:
             optuna_n_jobs=args.optuna_n_jobs,
             device=args.device,
             cv_min_train_days=args.cv_min_train_days,
+            gate=args.gate,
         )
     except Exception:  # noqa: BLE001
         log.error(f"walkforward crashed: {traceback.format_exc()}")
