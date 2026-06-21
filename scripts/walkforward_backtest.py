@@ -211,6 +211,7 @@ def _train_models_through(
     optuna_n_jobs: int = 1,
     cv_min_train_days: int = 504,
     compute_cv: bool = False,
+    train_lookback_years: int = _DEFAULT_LOOKBACK_YEARS,
 ) -> tuple[Any, Any, list[str], TrainConfig, TrainConfig, dict[str, float | None]]:
     """Train regression + (calibrated) classification models on data
     through `final_train_end`.
@@ -231,7 +232,7 @@ def _train_models_through(
 
     Returns (reg_model, cls_model, feature_cols, reg_cfg_used, cls_cfg_used).
     """
-    train_start = final_train_end - timedelta(days=_TRAIN_LOOKBACK_DAYS)
+    train_start = final_train_end - timedelta(days=365 * train_lookback_years)
     df = build_training_dataset(
         universe, train_start, final_train_end, horizon_days=horizon_days,
     )
@@ -446,6 +447,9 @@ def run_walkforward(
     device: str = "cpu",
     cv_min_train_days: int = 504,
     gate: bool = False,
+    train_lookback_years: int = _DEFAULT_LOOKBACK_YEARS,
+    train_end_gap_days: int = _EMBARGO_DAYS + 1,
+    quarterly_tune: bool = False,
 ) -> dict:
     """Top-level entry. Returns a summary dict; report.json is written too.
 
@@ -521,14 +525,30 @@ def run_walkforward(
 
     summary: dict = {
         "universe": universe, "start": start.isoformat(), "end": end.isoformat(),
-        "horizon_days": horizon_days, "gate": gate, "retrains": [], "errors": [],
+        "horizon_days": horizon_days, "gate": gate,
+        "train_lookback_years": train_lookback_years,
+        "train_end_gap_days": train_end_gap_days,
+        "per_retrain_optuna": per_retrain_optuna,
+        "quarterly_tune": quarterly_tune,
+        "retrains": [], "errors": [],
         "predictions_path": preds_path, "paper_path": paper_path,
     }
+    log.info(
+        f"walkforward: train recipe — lookback={train_lookback_years}y "
+        f"train_end_gap={train_end_gap_days}d per_retrain_optuna={per_retrain_optuna} "
+        f"gate={gate}"
+    )
     t_start_total = time.monotonic()
 
     # Iterate retrain windows. Each retrain is responsible for predicting
     # every trading day in [retrain_date, next_retrain_date).
     retrain_dates_padded = retrain_dates + [end + timedelta(days=1)]
+
+    # Hyperparameters carried forward across retrains. Start from the
+    # borrowed/production config; quarterly_tune updates these at quarter
+    # boundaries, monthly retrains reuse them. (per_retrain_optuna overrides
+    # and tunes every retrain.)
+    cur_reg_cfg, cur_cls_cfg = reg_cfg, cls_cfg
 
     # Promote/retain gate state (only used when gate=True). Tracks the
     # currently-DEPLOYED model per head + the CV metric it was promoted on.
@@ -540,6 +560,8 @@ def run_walkforward(
     dep_cls_acc: float | None = None
     if gate:
         log.info("walkforward: PROMOTE/RETAIN GATE enabled (heads gated independently)")
+    if quarterly_tune:
+        log.info("walkforward: LIVE TUNE CADENCE — Optuna at quarter starts, reuse monthly")
 
     # Resume support: check which retrain windows already have predictions
     # in the output sqlite. Skip those entirely (no train, no predict).
@@ -567,10 +589,13 @@ def run_walkforward(
 
     for i, rd in enumerate(retrain_dates):
         window_end = retrain_dates_padded[i + 1] - timedelta(days=1)
-        # Embargo: model can only see data ending `embargo` days before rd.
-        # Since the label is a 5-day forward return, we cut the training
-        # end at rd - embargo so we don't leak the labels at the boundary.
-        train_end = rd - timedelta(days=_EMBARGO_DAYS + 1)
+        # Train-end gap: how stale the model is relative to the window it
+        # predicts. Must match the DEPLOYED system to be a faithful backtest:
+        # live (jobs/monthly_retrain) trains through `today - train_end_gap_days`
+        # (60d), so a model is ~2-3 months stale by the time it trades. The
+        # default (embargo+1 ≈ 6d) is the look-ahead-free minimum (just past
+        # the 5-day label horizon); pass 60 to replicate live's staleness.
+        train_end = rd - timedelta(days=train_end_gap_days)
         days_in_window = [d for d in all_trading if rd <= d <= window_end]
         if not days_in_window:
             continue
@@ -582,18 +607,27 @@ def run_walkforward(
                 f"predictions for last day {days_in_window[-1]} already exist"
             )
             continue
+        # Tune cadence. --per-retrain-optuna tunes every retrain (the old
+        # honest-but-slow mode). --live-tune-cadence (quarterly_tune) matches
+        # the DEPLOYED system: re-tune hyperparameters only at the first
+        # retrain of each quarter (Jan/Apr/Jul/Oct, like the live quarterly
+        # job) and REUSE them for the monthly retrains in between — while
+        # still retraining model WEIGHTS on fresh data every month. Tuned
+        # params are carried forward in cur_reg_cfg / cur_cls_cfg.
+        tune_this = per_retrain_optuna or (quarterly_tune and rd.month in (1, 4, 7, 10))
         t_retrain = time.monotonic()
         try:
             reg_model, cls_model, feature_cols, reg_cfg_used, cls_cfg_used, cand_cv = _retry_on_lock(
                 lambda: _train_models_through(
                     universe, train_end,
                     horizon_days=horizon_days,
-                    reg_cfg=reg_cfg, cls_cfg=cls_cfg,
-                    per_retrain_optuna=per_retrain_optuna,
+                    reg_cfg=cur_reg_cfg, cls_cfg=cur_cls_cfg,
+                    per_retrain_optuna=tune_this,
                     optuna_trials=optuna_trials,
                     optuna_n_jobs=optuna_n_jobs,
                     cv_min_train_days=cv_min_train_days,
                     compute_cv=gate,
+                    train_lookback_years=train_lookback_years,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -601,6 +635,9 @@ def run_walkforward(
             summary["errors"].append({"retrain_date": rd.isoformat(), "phase": "train", "error": repr(exc)})
             continue
         train_seconds = time.monotonic() - t_retrain
+        # Carry the (possibly newly-tuned) hyperparameters forward so the
+        # next monthly retrains reuse them until the next quarterly tune.
+        cur_reg_cfg, cur_cls_cfg = reg_cfg_used, cls_cfg_used
 
         # --- Promote/retain gate (heads gated independently) -----------------
         # Default (gate=False): use the freshly-trained candidate for both
@@ -776,6 +813,26 @@ def main() -> int:
              "always deploy the freshly-trained model (original WF policy).",
     )
     p.add_argument(
+        "--train-lookback-years", type=int, default=_DEFAULT_LOOKBACK_YEARS,
+        help="Rolling training-window length in years. Default 5; pass 10 to "
+             "match the DEPLOYED system (jobs/monthly_retrain lookback_years=10).",
+    )
+    p.add_argument(
+        "--train-end-gap-days", type=int, default=_EMBARGO_DAYS + 1,
+        help="Days between a retrain's train_end and the window it predicts — "
+             "i.e. how stale the model is. Default ~6 (look-ahead-free minimum). "
+             "Pass 60 to match the DEPLOYED system (live trains through "
+             "today-60d, so models are ~2-3 months stale when they trade).",
+    )
+    p.add_argument(
+        "--live-tune-cadence", action="store_true",
+        help="Match the DEPLOYED tuning cadence: re-tune hyperparameters via "
+             "Optuna only at the first retrain of each quarter (Jan/Apr/Jul/Oct) "
+             "and REUSE them monthly in between (weights still retrain monthly). "
+             "Mirrors live's monthly do_tune=False + quarterly tune. Mutually "
+             "exclusive with --per-retrain-optuna (which tunes every retrain).",
+    )
+    p.add_argument(
         "--cv-min-train-days", type=int, default=504,
         help="Minimum training-fold size for purged walk-forward CV. "
              "Default 504 (~2 years). Lower (e.g. 252) when the universe "
@@ -796,6 +853,9 @@ def main() -> int:
             device=args.device,
             cv_min_train_days=args.cv_min_train_days,
             gate=args.gate,
+            train_lookback_years=args.train_lookback_years,
+            train_end_gap_days=args.train_end_gap_days,
+            quarterly_tune=args.live_tune_cadence,
         )
     except Exception:  # noqa: BLE001
         log.error(f"walkforward crashed: {traceback.format_exc()}")
