@@ -1004,15 +1004,22 @@ _STRICT_WF_PATHS = {
 # so the baseline (V1 locked) numbers are never touched.
 _STRICT_WF_VARIANTS: dict[str, dict[str, dict[str, str]]] = {
     "SP500": {
-        # No-gate control run was dropped 2026-06-20 to focus all CPU on the
-        # gated run; the locked V1 baseline already represents the
-        # always-newest policy, so it serves as the no-gate comparator.
+        # Live-design backtest with the REVALIDATION gate (incumbent re-scored
+        # on current data). The re-run writes here; empty until launched.
         "gated": {
-            "label": "Live-design backtest (gated)",
+            "label": "Live-design · revalidation gate",
             "dir": "data/processed/wf_gatetest_gated",
             # WF run log — parsed for live per-month gate decisions while the
             # run is in progress (report.json is only written at completion).
             "log": "logs/wf_gated.log",
+        },
+        # Preserved 36-retrain run with the OLD frozen-baseline gate (the one
+        # that locked in the May-2014 model for 2.5 years). Kept for the
+        # before/after comparison.
+        "frozen": {
+            "label": "Live-design · frozen gate (old)",
+            "dir": "data/processed/wf_gatetest_frozen",
+            "log": "logs/wf_frozen.log",
         },
     },
 }

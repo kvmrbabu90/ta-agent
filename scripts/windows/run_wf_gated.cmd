@@ -8,7 +8,8 @@ REM predictions already exist, so re-running after any interruption picks up
 REM where it left off. Output: data\processed\wf_gatetest_gated\.
 REM
 REM Matches the deployed system: 10y lookback, 60d train-end gap, quarterly
-REM Optuna tune cadence (reuse monthly), promote/retain gate (both heads).
+REM Optuna tune cadence (reuse monthly), REVALIDATION promote/retain gate
+REM (incumbent re-scored on current data each retrain, both heads).
 REM ===========================================================================
 cd /d C:\dev\ta-agent
 
