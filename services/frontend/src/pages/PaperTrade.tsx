@@ -629,7 +629,23 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
     });
     const firstOpen = sorted.find((p) => p.snapshot_kind === 'open_8am_ct');
     const closes = sorted.filter((p) => p.snapshot_kind === 'close_5pm_ct');
-    const stratPoints = firstOpen ? [firstOpen, ...closes] : closes;
+    // If the latest trading day has an open_8am_ct mark but no close_5pm_ct
+    // yet (market still open / pre-5pm run), append it so the curve reaches
+    // today instead of stalling at the last persisted close — it matches the
+    // headline 8:30 AM tile. Excludes firstOpen (already the left anchor) and
+    // any day that already has a close (avoids duplicating today after 5pm).
+    const lastCloseDate = closes.length ? closes[closes.length - 1].trade_date : undefined;
+    const trailingOpen = sorted
+      .filter(
+        (p) =>
+          p.snapshot_kind === 'open_8am_ct' &&
+          p !== firstOpen &&
+          (!lastCloseDate || p.trade_date > lastCloseDate),
+      )
+      .pop();
+    const stratPoints = firstOpen
+      ? [firstOpen, ...closes, ...(trailingOpen ? [trailingOpen] : [])]
+      : closes;
 
     const benchByKey = new Map(
       (benchPoints ?? []).map((b) => [
@@ -639,13 +655,21 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
     );
     const postByDate = new Map((postTaxPoints ?? []).map((b) => [b.trade_date, b.equity]));
 
-    const basePoints = stratPoints.map((p) => {
+    const basePoints = stratPoints.map((p, idx) => {
       const isAm = p.snapshot_kind === 'open_8am_ct';
+      const isBaseline = idx === 0; // only the leftmost open is the anchor
       const datePart = p.trade_date;
       const label = `${datePart} ${isAm ? 'AM' : 'PM'}`;
       const benchActual = benchByKey.get(`${datePart}|${p.snapshot_kind}`) ?? null;
-      // Post-tax line: morning baseline = starting capital; close = actual value.
-      const postActual = isAm ? starting : (postByDate.get(datePart) ?? null);
+      // Post-tax line: leftmost morning baseline = starting capital; closes =
+      // actual after-tax value. A trailing today-open mark has no after-tax
+      // figure yet → null (connectNulls keeps the line at the last close
+      // rather than dipping back to starting capital).
+      const postActual = isBaseline
+        ? starting
+        : isAm
+          ? null
+          : (postByDate.get(datePart) ?? null);
       return {
         date: label,
         Strategy: p.equity,
@@ -679,7 +703,7 @@ function EquityChart({ points, benchPoints, postTaxPoints, benchSymbol, starting
   const hasBench = (benchPoints?.length ?? 0) > 0;
   const hasPostTax =
     (postTaxPoints?.length ?? 0) > 0 &&
-    postTaxPoints!.some((p, i) => {
+    postTaxPoints!.some((p) => {
       const matchIdx = series.findIndex((s) => s.date === p.trade_date);
       if (matchIdx < 0) return false;
       const preTax = series[matchIdx].Strategy;
