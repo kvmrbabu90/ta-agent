@@ -33,6 +33,7 @@ from packages.modeling.registry import ModelMetadata, load_latest_model, save_mo
 from packages.modeling.splits import PurgedWalkForwardSplit
 from packages.modeling.train import (
     TrainConfig,
+    revalidate_model_ic,
     train_final_model,
     train_with_cv,
 )
@@ -52,6 +53,38 @@ _TUNE_TRIALS = 20
 _NON_FEATURE_COLS = {
     "symbol", "bar_date", "in_universe", "fwd_return_5d", "fwd_quintile_5d",
 }
+
+
+def _revalidated_baseline(
+    universe: str, target: str, df: pd.DataFrame, horizon_days: int
+) -> float | None:
+    """REVALIDATION gate: re-score the deployed incumbent on THIS retrain's
+    purged-WF validation folds — the same recent data the candidate is judged
+    on — instead of the incumbent's stale deploy-time score.
+
+    The stale-score approach (_baseline_metric) could keep a model live for
+    years: a model validated in an easier-to-predict era keeps a high frozen
+    bar that no fresh candidate can clear, even after the incumbent's real
+    skill has decayed. Re-measuring the incumbent now makes the gate a fair
+    "is the new model better than the old one ON CURRENT DATA" test.
+
+    Returns the incumbent's revalidated metric (rank-IC / accuracy), or None
+    when there's no incumbent (→ first model promotes) or it can't be scored.
+    """
+    try:
+        inc_model, _meta = load_latest_model(universe, target)
+    except FileNotFoundError:
+        return None
+    label = (
+        f"fwd_return_{horizon_days}d"
+        if target == "regression"
+        else f"fwd_quintile_{horizon_days}d"
+    )
+    feats = [c for c in df.columns if c not in _NON_FEATURE_COLS]
+    splitter = PurgedWalkForwardSplit(
+        n_folds=5, horizon_days=horizon_days, embargo_days=horizon_days,
+    )
+    return revalidate_model_ic(inc_model, df, feats, label, splitter, objective=target)
 
 
 def _baseline_metric(universe: str, target: str) -> float | None:
@@ -191,7 +224,9 @@ def run_universe(
 
     for target in ("regression", "classification"):
         log.info(f"[retrain] {universe}/{target}: training")
-        baseline_metric = _baseline_metric(universe, target)
+        # Revalidation gate: incumbent re-scored on the current folds (falls
+        # back to None → promote if it can't be loaded/scored).
+        baseline_metric = _revalidated_baseline(universe, target, df, horizon_days)
         try:
             outcome = _train_one_target(
                 df, universe, target,

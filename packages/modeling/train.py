@@ -264,6 +264,60 @@ def train_with_cv(
     }
 
 
+def revalidate_model_ic(
+    model: Any,
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    label_col: str,
+    splitter: PurgedWalkForwardSplit,
+    *,
+    objective: str,
+) -> float | None:
+    """Out-of-sample CV metric for an ALREADY-TRAINED (frozen) model.
+
+    Scores ``model`` on the purged walk-forward VALIDATION folds of ``df`` —
+    the same folds a freshly-trained candidate sees in ``train_with_cv`` — but
+    WITHOUT retraining. This lets a promote/retain gate compare an incumbent's
+    CURRENT skill against a candidate's on the SAME recent data, instead of
+    against the incumbent's stale deploy-time score (which can lock a model in
+    for years if it was validated in an easier-to-predict era).
+
+    Returns mean daily rank-IC (regression) or mean accuracy (classification),
+    or None if it cannot be computed (e.g. a feature mismatch on an old model)
+    — in which case callers should fall back to their prior baseline.
+    """
+    try:
+        df_clean = _filter_trainable(df, label_col)
+        if df_clean.empty:
+            return None
+        per_fold: list[float] = []
+        for _train_idx, val_idx in splitter.split(df_clean):
+            if len(val_idx) == 0:
+                continue
+            sub = df_clean.iloc[val_idx]
+            X_val = sub[feature_cols]
+            y_val = sub[label_col]
+            val_dates = sub["bar_date"]
+            if objective == "regression":
+                preds = np.asarray(model.predict(_clean_features(X_val)), dtype=float)
+                ed = evaluate_predictions(
+                    y_true_returns=y_val.reset_index(drop=True),
+                    y_pred_returns=pd.Series(preds).reset_index(drop=True),
+                    bar_dates=val_dates.reset_index(drop=True),
+                )
+                per_fold.append(ed["mean_daily_rank_ic"])
+            else:
+                proba = np.asarray(model.predict_proba(X_val))
+                class_pred = proba.argmax(axis=1) if proba.ndim == 2 else proba
+                per_fold.append(
+                    float((class_pred == y_val.to_numpy().astype(int)).mean())
+                )
+        return float(np.nanmean(per_fold)) if per_fold else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"revalidate_model_ic failed ({objective}): {exc!r}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Final / production model
 # ---------------------------------------------------------------------------

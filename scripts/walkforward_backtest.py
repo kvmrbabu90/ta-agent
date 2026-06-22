@@ -52,7 +52,12 @@ from packages.inference.tracking import log_predictions
 from packages.labels.dataset import build_training_dataset
 from packages.modeling.calibrate import calibrate_classifier
 from packages.modeling.splits import PurgedWalkForwardSplit
-from packages.modeling.train import TrainConfig, train_final_model, train_with_cv
+from packages.modeling.train import (
+    TrainConfig,
+    revalidate_model_ic,
+    train_final_model,
+    train_with_cv,
+)
 from packages.modeling.tune import tune_hyperparameters
 
 _DEFAULT_HORIZON = 5
@@ -212,6 +217,8 @@ def _train_models_through(
     cv_min_train_days: int = 504,
     compute_cv: bool = False,
     train_lookback_years: int = _DEFAULT_LOOKBACK_YEARS,
+    incumbent_reg_model: Any = None,
+    incumbent_cls_model: Any = None,
 ) -> tuple[Any, Any, list[str], TrainConfig, TrainConfig, dict[str, float | None]]:
     """Train regression + (calibrated) classification models on data
     through `final_train_end`.
@@ -302,7 +309,15 @@ def _train_models_through(
     # (jobs/monthly_retrain): regression → mean_daily_rank_ic,
     # classification → val_accuracy, both from purged-WF CV on the same
     # training slice with the same hyperparameters used for the final fit.
-    cv_metrics: dict[str, float | None] = {"reg_ic": None, "cls_acc": None}
+    #
+    # REVALIDATION GATE: when an incumbent model is passed, we ALSO score it
+    # on the SAME validation folds (without retraining). The gate then
+    # compares candidate-vs-incumbent on identical recent data — instead of
+    # against the incumbent's stale deploy-time score, which could lock a
+    # model in for years.
+    cv_metrics: dict[str, float | None] = {
+        "reg_ic": None, "cls_acc": None, "inc_reg_ic": None, "inc_cls_acc": None,
+    }
     if compute_cv:
         splitter = PurgedWalkForwardSplit(
             n_folds=5, horizon_days=horizon_days, embargo_days=horizon_days,
@@ -312,6 +327,11 @@ def _train_models_through(
                 df, feature_cols, f"fwd_return_{horizon_days}d", splitter, reg_cfg_used,
             )
             cv_metrics["reg_ic"] = reg_cv["mean_metrics"].get("mean_daily_rank_ic")
+            if incumbent_reg_model is not None:
+                cv_metrics["inc_reg_ic"] = revalidate_model_ic(
+                    incumbent_reg_model, df, feature_cols,
+                    f"fwd_return_{horizon_days}d", splitter, objective="regression",
+                )
         except Exception as exc:  # noqa: BLE001
             log.warning(f"gate CV (regression) failed at {final_train_end}: {exc!r}")
         try:
@@ -319,6 +339,11 @@ def _train_models_through(
                 df, feature_cols, f"fwd_quintile_{horizon_days}d", splitter, cls_cfg_used,
             )
             cv_metrics["cls_acc"] = cls_cv["mean_metrics"].get("val_accuracy")
+            if incumbent_cls_model is not None:
+                cv_metrics["inc_cls_acc"] = revalidate_model_ic(
+                    incumbent_cls_model, df, feature_cols,
+                    f"fwd_quintile_{horizon_days}d", splitter, objective="classification",
+                )
         except Exception as exc:  # noqa: BLE001
             log.warning(f"gate CV (classification) failed at {final_train_end}: {exc!r}")
 
@@ -551,15 +576,14 @@ def run_walkforward(
     cur_reg_cfg, cur_cls_cfg = reg_cfg, cls_cfg
 
     # Promote/retain gate state (only used when gate=True). Tracks the
-    # currently-DEPLOYED model per head + the CV metric it was promoted on.
-    # Reuses the live gate logic so the experiment is faithful to production.
+    # currently-DEPLOYED model per head. The incumbent's comparison metric is
+    # RE-MEASURED on each retrain's folds (revalidation gate), so no frozen
+    # deploy-time score is carried. Reuses the live gate's _should_promote.
     from jobs.monthly_retrain import _should_promote, _QUINTILE_N_CLASSES
     _floor = 1.0 / _QUINTILE_N_CLASSES
     dep_reg_model = dep_cls_model = dep_feature_cols = None
-    dep_reg_ic: float | None = None
-    dep_cls_acc: float | None = None
     if gate:
-        log.info("walkforward: PROMOTE/RETAIN GATE enabled (heads gated independently)")
+        log.info("walkforward: PROMOTE/RETAIN GATE enabled — REVALIDATION (incumbent re-scored on current folds)")
     if quarterly_tune:
         log.info("walkforward: LIVE TUNE CADENCE — Optuna at quarter starts, reuse monthly")
 
@@ -628,6 +652,8 @@ def run_walkforward(
                     cv_min_train_days=cv_min_train_days,
                     compute_cv=gate,
                     train_lookback_years=train_lookback_years,
+                    incumbent_reg_model=dep_reg_model,
+                    incumbent_cls_model=dep_cls_model,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -641,26 +667,31 @@ def run_walkforward(
 
         # --- Promote/retain gate (heads gated independently) -----------------
         # Default (gate=False): use the freshly-trained candidate for both
-        # heads. With gate=True: keep the incumbent for a head whose candidate
-        # CV metric doesn't clear 80% of the deployed model's.
+        # heads. With gate=True: REVALIDATION gate — compare the candidate
+        # against the incumbent's CV metric RE-MEASURED on this retrain's
+        # validation folds (cand_cv['inc_*']), not its stale deploy-time
+        # score. Deploy the candidate unless it falls below 80% of the
+        # incumbent's CURRENT skill.
         reg_decision = cls_decision = "deploy"  # for reporting
         use_reg, use_cls, use_feats = reg_model, cls_model, feature_cols
         if gate:
             cand_reg_ic = cand_cv.get("reg_ic")
             cand_cls_acc = cand_cv.get("cls_acc")
-            # Regression head: compare rank-IC directly.
-            reg_promote, _ = _should_promote(cand_reg_ic, dep_reg_ic)
+            inc_reg_ic = cand_cv.get("inc_reg_ic")  # incumbent, revalidated now
+            inc_cls_acc = cand_cv.get("inc_cls_acc")
+            # Regression head: candidate rank-IC vs incumbent's re-measured IC.
+            reg_promote, _ = _should_promote(cand_reg_ic, inc_reg_ic)
             if dep_reg_model is None or reg_promote:
-                dep_reg_model, dep_reg_ic = reg_model, cand_reg_ic
-                reg_decision = "deploy" if dep_reg_model is not None else "deploy"
+                dep_reg_model = reg_model
+                reg_decision = "deploy"
             else:
                 reg_decision = "retain"
-            # Classification head: compare accuracy EDGE over random.
+            # Classification head: accuracy EDGE over random, both re-measured.
             cand_cls_edge = (cand_cls_acc - _floor) if cand_cls_acc is not None else None
-            dep_cls_edge = (dep_cls_acc - _floor) if dep_cls_acc is not None else None
-            cls_promote, _ = _should_promote(cand_cls_edge, dep_cls_edge)
+            inc_cls_edge = (inc_cls_acc - _floor) if inc_cls_acc is not None else None
+            cls_promote, _ = _should_promote(cand_cls_edge, inc_cls_edge)
             if dep_cls_model is None or cls_promote:
-                dep_cls_model, dep_cls_acc = cls_model, cand_cls_acc
+                dep_cls_model = cls_model
                 cls_decision = "deploy"
             else:
                 cls_decision = "retain"
@@ -670,8 +701,8 @@ def run_walkforward(
             use_feats = dep_feature_cols
             log.info(
                 f"  [{i+1}/{len(retrain_dates)}] {rd}: GATE "
-                f"reg={reg_decision}(cand_ic={cand_reg_ic}) "
-                f"cls={cls_decision}(cand_acc={cand_cls_acc})"
+                f"reg={reg_decision}(cand_ic={cand_reg_ic} vs incumbent_now={inc_reg_ic}) "
+                f"cls={cls_decision}(cand_acc={cand_cls_acc} vs incumbent_now={inc_cls_acc})"
             )
 
         reg_version = f"wf_{universe}_regression_{rd.isoformat()}"
@@ -711,6 +742,8 @@ def run_walkforward(
             "gate_cls_decision": cls_decision if gate else None,
             "gate_cand_reg_ic": cand_cv.get("reg_ic") if gate else None,
             "gate_cand_cls_acc": cand_cv.get("cls_acc") if gate else None,
+            "gate_incumbent_reg_ic": cand_cv.get("inc_reg_ic") if gate else None,
+            "gate_incumbent_cls_acc": cand_cv.get("inc_cls_acc") if gate else None,
             "reg_hyperparams": {
                 "learning_rate": reg_cfg_used.learning_rate,
                 "num_leaves": reg_cfg_used.num_leaves,
