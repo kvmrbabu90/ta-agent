@@ -1134,6 +1134,34 @@ def _replay_engine_for_strict(
         return None
     run_id = f"strict_wf_live_{universe.lower()}"
 
+    def _paper_is_fresh() -> bool:
+        """True when paper_path was already built from the CURRENT
+        predictions snapshot and holds the run. Lets us skip the expensive
+        3120-day backtest on API-restart cold loads (the paper db persists
+        on disk across restarts). Staleness is detected by mtime: an
+        in-progress variant whose predictions keep growing has
+        preds_mtime > paper_mtime → returns False → rebuild."""
+        try:
+            if not os.path.exists(paper_path):
+                return False
+            if os.path.getmtime(paper_path) < os.path.getmtime(preds_path):
+                return False
+            pc = sqlite3.connect(f"file:{paper_path}?mode=ro", uri=True)
+            try:
+                row = pc.execute(
+                    "SELECT 1 FROM paper_equity WHERE run_id=? LIMIT 1", (run_id,)
+                ).fetchone()
+            finally:
+                pc.close()
+            return row is not None
+        except Exception:
+            return False
+
+    # Fast path: reuse the persisted replay when it's current. Checked
+    # before taking the lock so warm restarts never queue behind a rebuild.
+    if _paper_is_fresh():
+        return run_id
+
     # Concurrency-safe rebuild. The previous implementation did
     # ``os.remove(paper_path); backtest(...)`` which raced when two API
     # requests hit the strict-WF endpoint at the same time (Windows file
@@ -1148,6 +1176,11 @@ def _replay_engine_for_strict(
     #   3. If the replace itself races against another process holding
     #      the file, retry a few times before giving up.
     with _REPLAY_LOCK:
+        # Double-checked: a concurrent request (e.g. the 60s auto-refresh)
+        # may have rebuilt while we waited for the lock. Re-check so only the
+        # first waiter pays for the backtest; the rest return immediately.
+        if _paper_is_fresh():
+            return run_id
         tmp_path = f"{paper_path}.rebuild-{os.getpid()}.tmp"
         # If a prior crash left a tmp around, clear it.
         try:
